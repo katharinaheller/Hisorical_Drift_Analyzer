@@ -1,0 +1,7 @@
+docling==0.5.0 
+requests 
+numpy 
+faiss-cpu 
+tqdm 
+pyyaml 
+fitz 

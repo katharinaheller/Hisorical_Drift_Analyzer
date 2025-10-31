@@ -1,0 +1,40 @@
+# ---- Python / Virtualenv ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+*.log
+*.tmp
+
+# ---- Virtual Environment ----
+.venv/
+env/
+venv/
+ENV/
+*.env
+
+# ---- OS / IDE ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ---- Data / Outputs ----
+data/raw_pdfs/
+data/processed/
+data/index/
+outputs/
+.cache/
+logs/
+
+# ---- Jupyter / Notebooks ----
+.ipynb_checkpoints/
+
+# ---- Build ----
+build/
+dist/
+*.egg-info/
