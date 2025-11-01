@@ -14,35 +14,47 @@ paths:
 
 options:
   # --- Parsing and language setup -------------------------------------
-  language: "auto"        # detect automatically ("en" or "de" also supported)
-  pdf_parser: "auto"      # "fitz" = PyMuPDF, "auto" = choose best local parser
+  language: "auto"        # detect language automatically ("en" or "de" also supported)
+  # You can manually set the language as "en" (English), "de" (German), or other supported languages
+  pdf_parser: "fitz"      # "fitz" = PyMuPDF, "pdfplumber" = pdfplumber, "auto" = choose best local parser
+  # Set PDF parsing method: 
+  # "fitz" = use PyMuPDF parser
+  # "pdfplumber" = use pdfplumber parser for better multi-column handling
+  # "auto" = automatically choose the optimal parser based on available libraries
 
   # --- Parallel processing --------------------------------------------
   # Number of concurrent PDF parser processes, or "auto" for CPU-based detection
+  # Set the number of parallel processes used for parsing PDFs, or "auto" for automatic detection based on available CPU cores
   parallelism: "auto"
 
   # --- Metadata extraction --------------------------------------------
   # List of metadata fields to extract per document
   # Available: title, authors, year, abstract, detected_language, file_size, toc
   metadata_fields:
-    - title
-    - authors
-    - year
-    - detected_language
-    - file_size
-    - toc
+    - title                # Extract title metadata from the document
+    - authors              # Extract authors from the document metadata
+    - year                 # Extract the year of publication or creation
+    - detected_language    # Automatically detect the language of the document
+    - file_size            # Extract the size of the PDF file in bytes
+    - toc                  # Extract table of contents if available
 
   # --- Chunking configuration (reserved for later phases) -------------
   chunking:
     mode: "adaptive"                    # "adaptive" chooses optimal chunk sizes automatically
-    chunk_size: 2000                    # used only if mode = "static"
-    overlap: 200                        # overlap size in tokens
-    enable_overlap: true                # enable overlapping chunks
-    sentence_boundary_detection: true   # prefer splitting at sentence boundaries
-    merge_short_chunks: true            # merge very short chunks to preserve context
-    min_chunk_length: 400               # discard chunks shorter than this threshold (tokens)
+    # Other modes: "static" for fixed chunk size, "adaptive" for automatic chunk size based on document properties
+    chunk_size: 2000                    # Used only if mode = "static", define the fixed chunk size (in tokens)
+    overlap: 200                        # Overlap size in tokens (used when `enable_overlap` is true)
+    enable_overlap: true                # Enable overlapping chunks between adjacent chunks
+    sentence_boundary_detection: true   # Prefer splitting at sentence boundaries to maintain context
+    merge_short_chunks: true            # Merge very short chunks (below min_chunk_length) to preserve context
+    min_chunk_length: 400               # Discard chunks shorter than this threshold (in tokens)
 
   # --- Reproducibility and logging ------------------------------------
-  save_intermediate: true               # save intermediate JSONs for debugging
-  log_level: "INFO"                     # log verbosity level
-  deterministic_mode: true              # enforce reproducible output across runs
+  save_intermediate: true               # Save intermediate JSONs for debugging purposes
+  # Set to `true` to keep intermediate parsed/cleaned files; `false` to disable saving intermediate files
+  log_level: "INFO"                     # Log verbosity level: "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL"
+  deterministic_mode: true              # Enforce reproducible output across runs (use deterministic processes like hashing)
+
+# Additional options could include:
+# - **enable_metadata_cache:** Enable caching of metadata for faster processing.
+# - **exclude_empty_pages:** Whether to exclude pages with no meaningful content from processing.

@@ -77,14 +77,18 @@ def main():
                 res["metadata"].update(filtered_meta)
 
                 # --- STEP 3: Save outputs ---
+                # Save raw parsed output (only text)
                 parsed_path = parsed_dir / f"{pdf_name}.parsed.json"
                 with open(parsed_path, "w", encoding="utf-8") as f:
-                    json.dump(res, f, ensure_ascii=False, indent=2)
+                    json.dump({"text": res["text"]}, f, ensure_ascii=False, indent=2)
 
-                cleaned_path = cleaned_dir / f"{pdf_name}.cleaned.json"
-                with open(cleaned_path, "w", encoding="utf-8") as f:
-                    json.dump(res, f, ensure_ascii=False, indent=2)
+                # Save cleaned text only
+                cleaned_path = cleaned_dir / f"{pdf_name}.cleaned.txt"
+                if "text" in res:
+                    with open(cleaned_path, "w", encoding="utf-8") as f:
+                        f.write(res["text"])
 
+                # Save metadata separately
                 meta_path = metadata_dir / f"{pdf_name}.metadata.json"
                 with open(meta_path, "w", encoding="utf-8") as f:
                     json.dump(res["metadata"], f, ensure_ascii=False, indent=2)
@@ -98,7 +102,7 @@ def main():
     # ------------------------------------------------------------------
     # 4. Sequential fallback mode
     # ------------------------------------------------------------------
-    parser = factory.create_parser()
+    parser = factory.create_parser()  # Use the appropriate parser based on configuration
     for pdf in pdf_files:
         logger.info(f"Parsing {pdf.name} ...")
         try:
@@ -120,22 +124,25 @@ def main():
             parsed_result["metadata"] = base_metadata
 
             # ---- STEP 4: Save outputs ----
+            # Save raw parsed output (only text)
             parsed_path = parsed_dir / f"{pdf.stem}.parsed.json"
             with open(parsed_path, "w", encoding="utf-8") as f:
-                json.dump(parsed_result, f, ensure_ascii=False, indent=2)
+                json.dump({"text": parsed_result["text"]}, f, ensure_ascii=False, indent=2)
 
-            cleaned_path = cleaned_dir / f"{pdf.stem}.cleaned.json"
+            # Save cleaned text only
+            cleaned_path = cleaned_dir / f"{pdf.stem}.cleaned.txt"
             with open(cleaned_path, "w", encoding="utf-8") as f:
-                json.dump(parsed_result, f, ensure_ascii=False, indent=2)
+                f.write(parsed_result["text"])
 
+            # Save metadata separately
             meta_path = metadata_dir / f"{pdf.stem}.metadata.json"
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(base_metadata, f, ensure_ascii=False, indent=2)
 
-            logger.info(f"✓ Completed {pdf.name}")
+            logger.info(f"Completed {pdf.name}")
 
         except Exception as e:
-            logger.error(f"✗ Failed to parse {pdf.name}: {e}")
+            logger.error(f"Failed to parse {pdf.name}: {e}")
 
     # ------------------------------------------------------------------
     # 5. Finish

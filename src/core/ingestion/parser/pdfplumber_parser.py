@@ -1,5 +1,6 @@
 import pytesseract
 import fitz  # PyMuPDF
+import pdfplumber  # Import pdfplumber for better multi-column text extraction
 from PIL import Image, ImageEnhance, ImageFilter
 import os
 import re
@@ -7,8 +8,8 @@ from typing import Dict, Any, List
 from pathlib import Path
 from src.core.ingestion.parser.interfaces.i_pdf_parser import IPdfParser
 
-class PyMuPDFParser(IPdfParser):
-    """Robust PDF parser using PyMuPDF with layout-based filtering of non-body text and OCR fallback for scanned PDFs."""
+class PdfPlumberParser(IPdfParser):
+    """Robust PDF parser using pdfplumber to handle multi-column text extraction and OCR fallback."""
 
     def __init__(self, exclude_toc: bool = True, max_pages: int | None = None, use_ocr: bool = True):
         """
@@ -33,101 +34,68 @@ class PyMuPDFParser(IPdfParser):
         if not pdf_path.exists():
             raise FileNotFoundError(f"File not found: {pdf_path}")
 
-        doc = fitz.open(pdf_path)
         text_blocks: List[str] = []  # To hold the extracted text from each page
-        toc_titles = self._extract_toc_titles(doc) if self.exclude_toc else []  # Extract TOC titles to filter out
+        toc_titles = self._extract_toc_titles(pdf_path) if self.exclude_toc else []  # Extract TOC titles to filter out
 
-        # Extract body text from each page
-        for page_index, page in enumerate(doc):
-            if self.max_pages and page_index >= self.max_pages:
-                break
-            blocks = page.get_text("blocks")
+        # Extract body text from each page using pdfplumber
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_index, page in enumerate(pdf.pages):
+                if self.max_pages and page_index >= self.max_pages:
+                    break
 
-            # If no text is found, use OCR
-            if not blocks and self.use_ocr:
-                blocks = self._apply_ocr_to_page(page)
-
-            page_body = self._extract_body_from_blocks(blocks)
-            if not page_body:
-                continue  # Skip empty pages or pages without meaningful content
-            # Skip ToC-like pages entirely
-            if self.exclude_toc and self._looks_like_toc_page(page_body, toc_titles):
-                continue
-            text_blocks.append(page_body)
+                # Extract text from the page considering multi-column layout
+                page_body = self._extract_text_from_page(page)
+                if page_body:
+                    text_blocks.append(page_body)
 
         clean_text = "\n".join(t for t in text_blocks if t)
         clean_text = self._remove_residual_metadata(clean_text)
 
         metadata = {
             "source_file": str(pdf_path.name),
-            "page_count": len(doc),
-            "has_toc": bool(doc.get_toc()),
+            "page_count": len(pdf.pages),
         }
 
-        doc.close()
         return {"text": clean_text.strip(), "metadata": metadata}
 
-    def _extract_toc_titles(self, doc) -> List[str]:
+    def _extract_text_from_page(self, page) -> str:
+        """
+        Extract text from a page considering the multi-column layout using pdfplumber.
+        
+        :param page: The pdfplumber page object.
+        :return: Extracted text from the page.
+        """
+        # Split the page into columns using pdfplumber's layout extraction
+        width = page.width
+        left_column = page.within_bbox((0, 0, width / 3, page.height))  # Left column
+        middle_column = page.within_bbox((width / 3, 0, 2 * width / 3, page.height))  # Middle column
+        right_column = page.within_bbox((2 * width / 3, 0, width, page.height))  # Right column
+
+        # Extract text from each column
+        left_text = left_column.extract_text()
+        middle_text = middle_column.extract_text()
+        right_text = right_column.extract_text()
+
+        # Combine the text from all columns
+        combined_text = f"{left_text}\n{middle_text}\n{right_text}"
+
+        return combined_text
+
+    def _extract_toc_titles(self, pdf_path: Path) -> List[str]:
         """
         Extract table of contents (TOC) titles from the PDF document to filter them out from the main text.
         
-        :param doc: The PyMuPDF document object.
+        :param pdf_path: The path to the PDF file.
         :return: A list of TOC titles.
         """
-        toc = doc.get_toc()
-        return [entry[1].strip() for entry in toc if len(entry) >= 2]
-
-    def _looks_like_toc_page(self, text: str, toc_titles: List[str]) -> bool:
-        """
-        Heuristic to detect table of contents pages by checking if the text contains typical TOC structure.
-
-        :param text: The text from a page.
-        :param toc_titles: The list of TOC titles to match against.
-        :return: True if the page looks like a TOC, False otherwise.
-        """
-        if not text or len(text) < 100:
-            return False
-        if re.search(r"(?i)\btable\s+of\s+contents\b|\binhaltsverzeichnis\b", text):
-            return True
-        match_count = sum(1 for t in toc_titles if t and t in text)
-        return match_count > 5
-
-    def _extract_body_from_blocks(self, blocks: list) -> str:
-        """
-        Optimized extraction to ensure only meaningful body text (e.g., abstract, sections) is included.
-        
-        :param blocks: The list of text blocks extracted from the page.
-        :return: A string of extracted body text.
-        """
-        # Initialize variables for abstract detection and block storage
-        abstract_found = False
-        abstract_block = []
-        candidate_blocks = []
-
-        for (x0, y0, x1, y1, text, *_ ) in blocks:
-            if not text or len(text.strip()) < 30:
-                continue  # Skip empty or short text blocks
-
-            # If the abstract hasn't been found, try to capture it
-            if not abstract_found and re.search(r"(?i)\babstract\b", text):
-                abstract_found = True
-                abstract_block.append(text.strip())
-                continue  # Skip content after abstract until the main body starts
-
-            # Filter out metadata and irrelevant blocks
-            if re.search(r"(?i)(title|author|doi|keywords|arxiv|university|faculty|institute|version)", text):
-                continue  # Skip metadata blocks
-            if len(text.strip().split()) < 20:
-                continue  # Skip short blocks
-
-            # Add the remaining relevant blocks
-            candidate_blocks.append(text.strip())
-
-        # Add the abstract at the beginning of the body if it was found
-        if abstract_found:
-            candidate_blocks.insert(0, "\n".join(abstract_block))
-
-        return "\n".join(candidate_blocks)
+        toc_titles = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                # Try to get TOC titles from the page (if any)
+                toc = page.extract_text()
+                if toc and re.search(r"(?i)\btable\s+of\s+contents\b", toc):
+                    toc_titles.append(toc)
+        return toc_titles
 
     def _remove_residual_metadata(self, text: str) -> str:
         """
@@ -136,7 +104,6 @@ class PyMuPDFParser(IPdfParser):
         :param text: The extracted text to clean up.
         :return: Cleaned text with metadata removed.
         """
-        # Extended patterns for filtering out metadata
         patterns = [
             r"(?im)^table\s+of\s+contents.*$",
             r"(?im)^inhaltsverzeichnis.*$",
@@ -145,12 +112,10 @@ class PyMuPDFParser(IPdfParser):
             r"(?m)^\s*\d+\s*$",  # Remove single digit page numbers like "1", "2", "3"
             r"(?i)\bhttps?://\S+",  # Remove URLs
             r"(?i)\b\w+@\w+\.\w+",  # Remove email addresses
-            r"(?i)(RSISE|NICTA|university|faculty|institute)\b.*",  # Remove institution names
         ]
         for p in patterns:
             text = re.sub(p, "", text, flags=re.DOTALL)
 
-        # Optionally, remove excessive line breaks or extra spaces
         text = re.sub(r"\n{2,}", "\n\n", text)  # Merge consecutive line breaks
         return text.strip()
 

@@ -1,0 +1,30 @@
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\adaptive_chunker.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\all_chunking_files.txt ==== 
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\adaptive_chunker.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\all_chunking_files.txt ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\i_chunker.py ==== 
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
+
+
+class IChunker(ABC):
+    """Interface for all chunking strategies."""
+
+    @abstractmethod
+    def chunk(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """
+        Split cleaned text into small units.
+        Each returned item should at least have: {"text": ..., "metadata": {...}}
+        """
+        raise NotImplementedError
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\static_chunker.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\utils_chunking.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\__init__.py ==== 
+

@@ -1,0 +1,1994 @@
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\all_ingestion_files.txt ==== 
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\all_ingestion_files.txt ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\config_loader.py ==== 
+from __future__ import annotations
+import os
+import yaml
+from pathlib import Path
+from typing import Any, Dict
+
+
+class ConfigLoader:
+    """
+    Loads YAML configuration files and replaces ${base_dir} / ${PROJECT_ROOT}
+    placeholders only when they are explicitly present.
+    """
+
+    def __init__(self, path: str):
+        self.path = Path(path)
+        if not self.path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {self.path}")
+
+        with open(self.path, "r", encoding="utf-8") as f:
+            self._raw = yaml.safe_load(f) or {}
+
+        # Detect project root (directory above 'configs')
+        self.project_root = self._detect_project_root()
+
+        # Determine base_dir (may contain placeholders)
+        global_section = self._raw.get("global", {})
+        base_dir_value = global_section.get("base_dir", "${PROJECT_ROOT}")
+        self.base_dir = self._expand_single_var(base_dir_value)
+
+        # Expand all placeholders recursively
+        self.config = self._expand_vars(self._raw)
+
+        # Debug info
+        print("\n[DEBUG] Expanded paths:")
+        for k, v in self.config.get("paths", {}).items():
+            print(f"  {k}: {v}")
+        print()
+
+    # ------------------------------------------------------------------
+    def _detect_project_root(self) -> Path:
+        """Return the root directory of the project."""
+        p = self.path.resolve()
+        if "configs" in p.parts:
+            idx = p.parts.index("configs")
+            return Path(*p.parts[:idx])
+        return p.parent
+
+    # ------------------------------------------------------------------
+    def _expand_single_var(self, value: str) -> str:
+        """Replace placeholders only if ${...} patterns are present."""
+        if not isinstance(value, str) or "${" not in value:
+            return value  # do not modify normal strings like "auto"
+
+        replacements = {
+            "${PROJECT_ROOT}": str(self.project_root),
+            "${project_root}": str(self.project_root),
+            "${BASE_DIR}": str(self.project_root),
+            "${base_dir}": str(self.project_root),
+        }
+
+        for placeholder, real in replacements.items():
+            value = value.replace(placeholder, real)
+        return str(Path(value).resolve())
+
+    # ------------------------------------------------------------------
+    def _expand_vars(self, data: Any) -> Any:
+        """Recursively replace placeholders in nested structures."""
+        if isinstance(data, dict):
+            return {k: self._expand_vars(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._expand_vars(v) for v in data]
+        elif isinstance(data, str):
+            return self._expand_single_var(data)
+        else:
+            return data
+
+    # ------------------------------------------------------------------
+    def get(self, key: str, default: Any = None) -> Any:
+        """Access top-level config sections."""
+        return self.config.get(key, default)
+
+
+# ----------------------------------------------------------------------
+def load_config(path: str) -> Dict[str, Any]:
+    """Convenience wrapper returning parsed and expanded configuration dict."""
+    return ConfigLoader(path).config
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\ingestion_orchestrator.py ==== 
+from __future__ import annotations
+import logging
+import json
+from pathlib import Path
+from typing import Any, Dict
+
+from src.core.ingestion.config_loader import ConfigLoader
+from src.core.ingestion.utils.file_utils import ensure_dir
+from src.core.ingestion.parser.parser_factory import ParserFactory
+from src.core.ingestion.metadata.metadata_extractor_factory import MetadataExtractorFactory
+from src.core.ingestion.cleaner.rag_text_cleaner import RagTextCleaner
+
+
+def main():
+    # ------------------------------------------------------------------
+    # 1. Load configuration
+    # ------------------------------------------------------------------
+    cfg = ConfigLoader("configs/ingestion.yaml").config
+    opts: Dict[str, Any] = cfg.get("options", {})
+    log_level = getattr(logging, opts.get("log_level", "INFO").upper(), logging.INFO)
+
+    logging.basicConfig(level=log_level, format="%(levelname)s | %(message)s")
+    logger = logging.getLogger("IngestionOrchestrator")
+    logger.info("Starting ingestion pipeline")
+
+    # ------------------------------------------------------------------
+    # 2. Initialize components
+    # ------------------------------------------------------------------
+    factory = ParserFactory(cfg, logger=logger)
+    metadata_factory = MetadataExtractorFactory.from_config(cfg)
+    cleaner = RagTextCleaner.default()  # deterministic multi-stage cleaner
+
+    active_metadata_fields = opts.get("metadata_fields", [])
+    parallelism = opts.get("parallelism", "auto")
+
+    raw_dir = Path(cfg["paths"]["raw_pdfs"]).resolve()
+    parsed_dir = Path(cfg["paths"]["parsed"]).resolve()
+    cleaned_dir = Path(cfg["paths"].get("cleaned", "data/processed/cleaned")).resolve()
+    metadata_dir = Path(cfg["paths"]["metadata"]).resolve()
+    ensure_dir(parsed_dir)
+    ensure_dir(cleaned_dir)
+    ensure_dir(metadata_dir)
+
+    pdf_files = sorted(raw_dir.glob("*.pdf"))
+    if not pdf_files:
+        logger.warning(f"No PDF files found in {raw_dir}")
+        return
+
+    logger.info(f"Found {len(pdf_files)} PDF(s) in {raw_dir}")
+
+    # ------------------------------------------------------------------
+    # 3. Parallel or sequential mode
+    # ------------------------------------------------------------------
+    use_parallel = (
+        isinstance(parallelism, int) and parallelism > 1
+    ) or (isinstance(parallelism, str) and parallelism.lower() == "auto")
+
+    if use_parallel:
+        try:
+            parallel_parser = factory.create_parallel_parser()
+            logger.info("Running ingestion in parallel mode ...")
+            results = parallel_parser.parse_all(raw_dir, parsed_dir)
+
+            for res in results:
+                # --- STEP 1: Clean text deterministically ---
+                if "text" in res:
+                    res["text"] = cleaner.clean(res["text"])
+
+                # --- STEP 2: Extract and filter metadata ---
+                pdf_name = Path(res["metadata"]["source_file"]).stem
+                pdf_path = raw_dir / f"{pdf_name}.pdf"
+                all_meta = metadata_factory.extract_all(str(pdf_path))
+                filtered_meta = {
+                    k: v for k, v in all_meta.items()
+                    if not active_metadata_fields or k in active_metadata_fields
+                }
+                res["metadata"].update(filtered_meta)
+
+                # --- STEP 3: Save outputs ---
+                parsed_path = parsed_dir / f"{pdf_name}.parsed.json"
+                with open(parsed_path, "w", encoding="utf-8") as f:
+                    json.dump(res, f, ensure_ascii=False, indent=2)
+
+                cleaned_path = cleaned_dir / f"{pdf_name}.cleaned.json"
+                with open(cleaned_path, "w", encoding="utf-8") as f:
+                    json.dump(res, f, ensure_ascii=False, indent=2)
+
+                meta_path = metadata_dir / f"{pdf_name}.metadata.json"
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(res["metadata"], f, ensure_ascii=False, indent=2)
+
+            logger.info(f"Parallel ingestion completed ({len(results)} file(s)).")
+            return
+
+        except Exception as e:
+            logger.error(f"Parallel ingestion failed â†’ falling back to sequential: {e}")
+
+    # ------------------------------------------------------------------
+    # 4. Sequential fallback mode
+    # ------------------------------------------------------------------
+    parser = factory.create_parser()
+    for pdf in pdf_files:
+        logger.info(f"Parsing {pdf.name} ...")
+        try:
+            # ---- STEP 1: Parse text ----
+            parsed_result = parser.parse(str(pdf))
+
+            # ---- STEP 2: Clean text ----
+            if "text" in parsed_result:
+                parsed_result["text"] = cleaner.clean(parsed_result["text"])
+
+            # ---- STEP 3: Extract metadata (metadata module handles it fully) ----
+            base_metadata = parsed_result.get("metadata", {})
+            all_metadata = metadata_factory.extract_all(str(pdf))
+            if active_metadata_fields:
+                all_metadata = {
+                    k: v for k, v in all_metadata.items() if k in active_metadata_fields
+                }
+            base_metadata.update(all_metadata)
+            parsed_result["metadata"] = base_metadata
+
+            # ---- STEP 4: Save outputs ----
+            parsed_path = parsed_dir / f"{pdf.stem}.parsed.json"
+            with open(parsed_path, "w", encoding="utf-8") as f:
+                json.dump(parsed_result, f, ensure_ascii=False, indent=2)
+
+            cleaned_path = cleaned_dir / f"{pdf.stem}.cleaned.json"
+            with open(cleaned_path, "w", encoding="utf-8") as f:
+                json.dump(parsed_result, f, ensure_ascii=False, indent=2)
+
+            meta_path = metadata_dir / f"{pdf.stem}.metadata.json"
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(base_metadata, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"âœ“ Completed {pdf.name}")
+
+        except Exception as e:
+            logger.error(f"âœ— Failed to parse {pdf.name}: {e}")
+
+    # ------------------------------------------------------------------
+    # 5. Finish
+    # ------------------------------------------------------------------
+    logger.info("Ingestion complete.")
+
+
+if __name__ == "__main__":
+    main()
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\ingestor.py ==== 
+# src/core/ingestion/ingestor.py
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+
+from docling.document_converter import DocumentConverter
+from src.core.ingestion.interfaces.i_ingestor import IIngestor
+
+
+class Ingestor(IIngestor):
+    # Handles PDF ingestion using Docling (no chunking)
+    def __init__(self, enable_ocr: bool = True):
+        self.enable_ocr = enable_ocr
+        self.converter = DocumentConverter()
+
+    def ingest(self, source_path: str) -> Dict[str, Any]:
+        pdf_path = Path(source_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"File not found: {pdf_path}")
+
+        # Perform robust conversion using Docling
+        result = self.converter.convert(str(pdf_path))
+        document = getattr(result, "document", None)
+
+        # Extract plain text (fallback if needed)
+        text = ""
+        if document:
+            if hasattr(document, "export_to_markdown"):
+                text = document.export_to_markdown()
+            elif hasattr(document, "text"):
+                text = document.text
+
+        # Build metadata
+        metadata = {
+            "source_file": pdf_path.name,
+            "source_path": str(pdf_path),
+            "page_count": self._get_page_count(document),
+            "has_ocr": self._has_ocr(document),
+            "toc": self._extract_toc(document),
+        }
+
+        # Single-chunk representation (no splitting yet)
+        chunks = [{"text": text, "page": None, "bbox": None}] if text else []
+
+        return {"metadata": metadata, "chunks": chunks}
+
+    # -------------------------------------------------------
+    def _get_page_count(self, document: Any) -> Optional[int]:
+        if document is None:
+            return None
+        return len(getattr(document, "pages", []))
+
+    def _has_ocr(self, document: Any) -> bool:
+        if document is None:
+            return False
+        return bool(getattr(document, "ocr_content", None))
+
+    def _extract_toc(self, document: Any) -> List[Dict[str, Any]]:
+        toc: List[Dict[str, Any]] = []
+        if document and hasattr(document, "outline_items") and document.outline_items:
+            for item in document.outline_items:
+                toc.append({
+                    "title": getattr(item, "title", ""),
+                    "page": getattr(item, "page_number", None),
+                })
+        return toc
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata_merger.py ==== 
+# src/core/ingestion/metadata_merger.py
+from __future__ import annotations
+
+from typing import Dict, Any, List
+
+
+def merge_metadata(doc_metadata: Dict[str, Any], chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # attaches document-level metadata to every chunk
+    merged: List[Dict[str, Any]] = []
+    for idx, ch in enumerate(chunks):
+        new_ch = {
+            "id": f"{doc_metadata.get('source_file', 'doc')}_{idx}",
+            "text": ch.get("text", ""),
+            "page": ch.get("page"),
+            "bbox": ch.get("bbox"),
+            "metadata": dict(doc_metadata),
+        }
+        merged.append(new_ch)
+    return merged
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\__init__.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\adaptive_chunker.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\i_chunker.py ==== 
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
+
+
+class IChunker(ABC):
+    """Interface for all chunking strategies."""
+
+    @abstractmethod
+    def chunk(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """
+        Split cleaned text into small units.
+        Each returned item should at least have: {"text": ..., "metadata": {...}}
+        """
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\static_chunker.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\utils_chunking.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\__init__.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\all_cleaner_paths.txt ==== 
+C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\all_cleaner_paths.txt
+C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\i_text_cleaner.py
+C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rag_text_cleaner.py
+C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__init__.py
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\base_cleaner.py ==== 
+from __future__ import annotations
+from typing import final
+from src.core.ingestion.cleaner.i_text_cleaner import ITextCleaner
+
+
+class BaseTextCleaner(ITextCleaner):
+    """Base class providing a stable clean(...) interface."""
+
+    @final
+    def clean(self, text: str) -> str:
+        # Guarantee non-null string
+        if not text:
+            return ""
+        return self._clean_impl(text)
+
+    def _clean_impl(self, text: str) -> str:
+        # Must be implemented by subclasses
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\i_text_cleaner.py ==== 
+from __future__ import annotations
+from abc import ABC, abstractmethod
+
+
+class ITextCleaner(ABC):
+    """Interface for all text cleaners in the ingestion pipeline."""
+
+    @abstractmethod
+    def clean(self, text: str) -> str:
+        """Return a cleaned version of the given text."""
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rag_text_cleaner.py ==== 
+# src/core/ingestion/cleaner/rag_text_cleaner.py
+from __future__ import annotations
+from typing import List
+from src.core.ingestion.cleaner.i_text_cleaner import ITextCleaner
+from src.core.ingestion.cleaner.simple_cleaners import (
+    UnicodeNormalizer,
+    SoftHyphenCleaner,
+    HeaderFooterCleaner,
+    LayoutLineJoinCleaner,
+    TrailingWhitespaceCleaner,
+)
+
+
+class RagTextCleaner(ITextCleaner):
+    """
+    Composite text cleaner for RAG ingestion.
+    Runs several deterministic cleaners in a fixed order.
+    """
+
+    def __init__(self, cleaners: List[ITextCleaner]):
+        self.cleaners = cleaners
+
+    @classmethod
+    def default(cls) -> "RagTextCleaner":
+        # Order is important
+        cleaners: List[ITextCleaner] = [
+            UnicodeNormalizer(),       # normalize spaces and zero-width
+            SoftHyphenCleaner(),       # remove soft hyphen and join "foo-\nbar"
+            HeaderFooterCleaner(),     # drop obvious non-flow lines
+            LayoutLineJoinCleaner(),   # fix line breaks
+            TrailingWhitespaceCleaner()  # final formatting
+        ]
+        return cls(cleaners)
+
+    def clean(self, text: str) -> str:
+        # Run all cleaners consecutively
+        for cleaner in self.cleaners:
+            text = cleaner.clean(text)
+        return text
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rules.py ==== 
+# src/core/ingestion/cleaner/rules.py
+from __future__ import annotations
+import re
+
+# Common residual headings we want to drop only if they appear alone in a line
+SINGLE_LINE_HEADER_PATTERNS = [
+    r"(?i)^\s*table\s+of\s+contents\s*$",
+    r"(?i)^\s*inhaltsverzeichnis\s*$",
+    r"(?i)^\s*contents\s*$",
+]
+
+# Footer / page indicator
+FOOTER_PATTERNS = [
+    r"(?i)^\s*page\s+\d+\s*$",
+    r"(?i)^\s*p\.?\s*\d+\s*$",
+    r"^\s*\d+\s*$",
+]
+
+# Funding and preprint noise â€“ but only if line is short
+FUNDING_PATTERNS = [
+    r"(?i)^\s*funded\s+by.*$",
+    r"(?i)^\s*supported\s+by.*$",
+    r"(?i)^\s*this\s+preprint\s+.*$",
+    r"(?i)^\s*arxiv:\s*\d{4}\.\d{4,5}.*$",
+    r"(?i)^\s*doi:\s*10\.\d{4,9}/[-._;()/:A-Z0-9]+$",
+]
+
+# Lines we consider layout trash if they are too short
+MAX_LEN_FOR_STRICT_DROP = 80
+
+SOFT_HYPHEN = "\xad"
+SOFT_HYPHEN_RE = re.compile(SOFT_HYPHEN)
+
+# Hyphenated line break like "prob-\nabilistic"
+HYPHEN_LINEBREAK_RE = re.compile(r"(\w+)-\n(\w+)")
+
+# Linebreak in the middle of sentence like "proba-\nbilistic"
+INLINE_LINEBREAK_RE = re.compile(r"(\S)\n(\S)")
+
+# Multiple blank lines
+MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
+
+# Unicode spaces
+UNICODE_SPACES_RE = re.compile(r"[\u00a0\u2000-\u200b]+")
+
+
+def is_short_line(line: str) -> bool:
+    # Heuristic: many layout lines are short
+    return len(line.strip()) <= MAX_LEN_FOR_STRICT_DROP
+
+
+def match_any(patterns: list[str], line: str) -> bool:
+    for pat in patterns:
+        if re.match(pat, line):
+            return True
+    return False
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\simple_cleaners.py ==== 
+from __future__ import annotations
+import re
+from typing import List
+from src.core.ingestion.cleaner.base_cleaner import BaseTextCleaner
+from src.core.ingestion.cleaner import rules
+
+
+class UnicodeNormalizer(BaseTextCleaner):
+    """Normalize unicode spaces and zero-width chars."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Replace unicode spaces by normal space
+        text = rules.UNICODE_SPACES_RE.sub(" ", text)
+        return text
+
+
+class SoftHyphenCleaner(BaseTextCleaner):
+    """Remove soft hyphens and join line-broken words."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Remove soft hyphen character
+        text = text.replace(rules.SOFT_HYPHEN, "")
+        # Join hyphenated line breaks
+        text = rules.HYPHEN_LINEBREAK_RE.sub(r"\1\2", text)
+        return text
+
+
+class LayoutLineJoinCleaner(BaseTextCleaner):
+    """
+    Join lines that were broken by the PDF layout but belong together.
+    We do this conservatively: only if both sides are non-space.
+    """
+
+    def _clean_impl(self, text: str) -> str:
+        # Join inline linebreaks like "probabilistic\nreasoning" -> "probabilistic reasoning"
+        text = rules.INLINE_LINEBREAK_RE.sub(r"\1 \2", text)
+        # Collapse too many blank lines
+        text = rules.MULTI_NEWLINE_RE.sub("\n\n", text)
+        return text.strip()
+
+
+class HeaderFooterCleaner(BaseTextCleaner):
+    """Remove obvious header/footer/single-line noise."""
+
+    def _clean_impl(self, text: str) -> str:
+        cleaned_lines: List[str] = []
+        for line in text.splitlines():
+            raw = line.rstrip()
+
+            # Drop header-like lines
+            if rules.match_any(rules.SINGLE_LINE_HEADER_PATTERNS, raw):
+                continue
+
+            # Drop footer-like things only if short
+            if rules.match_any(rules.FOOTER_PATTERNS, raw) and rules.is_short_line(raw):
+                continue
+
+            # Drop funding/preprint if short
+            if rules.match_any(rules.FUNDING_PATTERNS, raw) and rules.is_short_line(raw):
+                continue
+
+            cleaned_lines.append(raw)
+
+        return "\n".join(cleaned_lines).strip()
+
+
+class TrailingWhitespaceCleaner(BaseTextCleaner):
+    """Normalize whitespace globally."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Strip each line
+        lines = [ln.rstrip() for ln in text.splitlines()]
+        text = "\n".join(lines)
+        # Final collapse of multiple newlines
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__init__.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\base_cleaner.cpython-312.pyc ==== 
+Ë
+    ªøi  ã                  ó>   — d dl mZ d dlmZ d dlmZ  G d„ de«      Zy)é    )Úannotations)Úfinal)ÚITextCleanerc                  ó*   — e Zd ZdZedd„«       Zdd„Zy)ÚBaseTextCleanerz3Base class providing a stable clean(...) interface.c                ó*   — |sy| j                  |«      S )NÚ )Ú_clean_impl©ÚselfÚtexts     úSC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\base_cleaner.pyÚcleanzBaseTextCleaner.clean	   s   € ñ ØØ×Ñ Ó%Ğ%ó    c                ó   — t         ‚)N)ÚNotImplementedErrorr   s     r   r
+   zBaseTextCleaner._clean_impl   s   € ä!Ğ!r   N)r   ÚstrÚreturnr   )Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r   r   r
+   © r   r   r   r      s   „ Ù=à
+ò&ó ğ&ô"r   r   N)Ú
+__future__r   Útypingr   Ú)src.core.ingestion.cleaner.i_text_cleanerr   r   r   r   r   Ú<module>r      s   ğİ "İ İ Bô"lõ "r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\i_text_cleaner.cpython-312.pyc ==== 
+Ë
+    øiJ  ã                  ó6   — d dl mZ d dlmZmZ  G d„ de«      Zy)é    )Úannotations)ÚABCÚabstractmethodc                  ó"   — e Zd ZdZedd„«       Zy)ÚITextCleanerz:Interface for all text cleaners in the ingestion pipeline.c                ó   — t         ‚)z+Return a cleaned version of the given text.)ÚNotImplementedError)ÚselfÚtexts     úUC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\i_text_cleaner.pyÚcleanzITextCleaner.clean   s
+   € ô "Ğ!ó    N)r   ÚstrÚreturnr   )Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r   r   © r   r   r   r      s   „ ÙDàò"ó ñ"r   r   N)Ú
+__future__r   Úabcr   r   r   r   r   r   Ú<module>r      s   ğİ "ß #ô"3õ "r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\rag_text_cleaner.cpython-312.pyc ==== 
+Ë
+    rùi7  ã                  óZ   — d dl mZ d dlmZ d dlmZ d dlmZmZm	Z	m
+Z
+mZ  G d„ de«      Zy)é    )Úannotations)ÚList)ÚITextCleaner©ÚUnicodeNormalizerÚSoftHyphenCleanerÚHeaderFooterCleanerÚLayoutLineJoinCleanerÚTrailingWhitespaceCleanerc                  ó2   — e Zd ZdZdd„Zedd„«       Zdd„Zy)	ÚRagTextCleanerzm
+    Composite text cleaner for RAG ingestion.
+    Runs several deterministic cleaners in a fixed order.
+    c                ó   — || _         y ©N)Úcleaners)Úselfr   s     úWC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rag_text_cleaner.pyÚ__init__zRagTextCleaner.__init__   s	   € Ø ˆó    c                óp   — t        «       t        «       t        «       t        «       t	        «       g} | |«      S r   r   )Úclsr   s     r   ÚdefaultzRagTextCleaner.default   s5   € ô ÓÜÓÜÓ!Ü!Ó#Ü%Ó'ğ(
+ˆñ 8‹}Ğr   c                óJ   — | j                   D ]  }|j                  |«      }Œ |S r   )r   Úclean)r   ÚtextÚcleaners      r   r   zRagTextCleaner.clean#   s#   € à—}”}ˆGØ—=‘= Ó&‰Dğ %àˆr   N)r   zList[ITextCleaner])Úreturnz'RagTextCleaner')r   Ústrr   r   )Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r   Úclassmethodr   r   © r   r   r   r      s%   „ ñó
+!ğ ò	ó ğ	ôr   r   N)Ú
+__future__r   Útypingr   Ú)src.core.ingestion.cleaner.i_text_cleanerr   Ú*src.core.ingestion.cleaner.simple_cleanersr   r   r	   r
+   r   r   r#   r   r   Ú<module>r(      s$   ğå "İ İ B÷õ ô\õ r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\rules.cpython-312.pyc ==== 
+Ë
+    Úøi%  ã                  óü   — d dl mZ d dlZg d¢Zg d¢Zg d¢ZdZdZ ej                  e«      Z	 ej                  d«      Z
+ ej                  d	«      Z ej                  d
+«      Z ej                  d«      Zdd„Zdd„Zy)é    )ÚannotationsN)z!(?i)^\s*table\s+of\s+contents\s*$z(?i)^\s*inhaltsverzeichnis\s*$z(?i)^\s*contents\s*$)z(?i)^\s*page\s+\d+\s*$z(?i)^\s*p\.?\s*\d+\s*$z^\s*\d+\s*$)z(?i)^\s*funded\s+by.*$z(?i)^\s*supported\s+by.*$z(?i)^\s*this\s+preprint\s+.*$z"(?i)^\s*arxiv:\s*\d{4}\.\d{4,5}.*$z-(?i)^\s*doi:\s*10\.\d{4,9}/[-._;()/:A-Z0-9]+$éP   ô   Â­z(\w+)-\n(\w+)z
+(\S)\n(\S)z\n{3,}z[\u00a0\u2000-\u200b]+c                óB   — t        | j                  «       «      t        k  S )N)ÚlenÚstripÚMAX_LEN_FOR_STRICT_DROP)Úlines    úLC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rules.pyÚis_short_liner   /   s   € äˆtz‰z‹|ÓÔ 7Ñ7Ğ7ó    c                óB   — | D ]  }t        j                  ||«      sŒ y y)NTF)ÚreÚmatch)Úpatternsr
+   Úpats      r   Ú	match_anyr   4   s"   € ÛˆÜ8‰8C˜ÕÙğ ğ r   )r
+   ÚstrÚreturnÚbool)r   z	list[str]r
+   r   r   r   )Ú
+__future__r   r   ÚSINGLE_LINE_HEADER_PATTERNSÚFOOTER_PATTERNSÚFUNDING_PATTERNSr	   ÚSOFT_HYPHENÚcompileÚSOFT_HYPHEN_REÚHYPHEN_LINEBREAK_REÚINLINE_LINEBREAK_REÚMULTI_NEWLINE_REÚUNICODE_SPACES_REr   r   © r   r   Ú<module>r#      s—   ğå "Û 	òĞ ò€òĞ ğ Ğ à€Ø—‘˜KÓ(€ğ !b—j‘jĞ!1Ó2Ğ ğ !b—j‘j Ó/Ğ ğ 2—:‘:˜iÓ(Ğ ğ B—J‘JĞ8Ó9Ğ ó8ô
+r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\simple_cleaners.cpython-312.pyc ==== 
+Ë
+    ùi#
+  ã                  óª   — d dl mZ d dlZd dlmZ d dlmZ d dlmZ  G d„ de«      Z	 G d„ d	e«      Z
+ G d
+„ de«      Z G d„ de«      Z G d„ de«      Zy)é    )ÚannotationsN)ÚList)ÚBaseTextCleaner)Úrulesc                  ó   — e Zd ZdZdd„Zy)ÚUnicodeNormalizerz.Normalize unicode spaces and zero-width chars.c                óF   — t         j                  j                  d|«      }|S )NÚ )r   ÚUNICODE_SPACES_REÚsub©ÚselfÚtexts     úVC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\simple_cleaners.pyÚ_clean_implzUnicodeNormalizer._clean_impl   s   € ä×&Ñ&×*Ñ*¨3°Ó5ˆØˆó    N©r   ÚstrÚreturnr   ©Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r   © r   r   r   r      s
+   „ Ù8ôr   r   c                  ó   — e Zd ZdZdd„Zy)ÚSoftHyphenCleanerz/Remove soft hyphens and join line-broken words.c                ó†   — |j                  t        j                  d«      }t        j                  j	                  d|«      }|S )NÚ z\1\2)Úreplacer   ÚSOFT_HYPHENÚHYPHEN_LINEBREAK_REr   r   s     r   r   zSoftHyphenCleaner._clean_impl   s5   € à|‰|œE×-Ñ-¨rÓ2ˆä×(Ñ(×,Ñ,¨W°dÓ;ˆØˆr   Nr   r   r   r   r   r   r      s
+   „ Ù9ôr   r   c                  ó   — e Zd ZdZdd„Zy)ÚLayoutLineJoinCleanerz
+    Join lines that were broken by the PDF layout but belong together.
+    We do this conservatively: only if both sides are non-space.
+    c                ó¢   — t         j                  j                  d|«      }t         j                  j                  d|«      }|j	                  «       S )Nz\1 \2ú
+
+)r   ÚINLINE_LINEBREAK_REr   ÚMULTI_NEWLINE_REÚstripr   s     r   r   z!LayoutLineJoinCleaner._clean_impl"   s>   € ä×(Ñ(×,Ñ,¨X°tÓ<ˆä×%Ñ%×)Ñ)¨&°$Ó7ˆØz‰z‹|Ğr   Nr   r   r   r   r   r$   r$      s   „ ñô
+r   r$   c                  ó   — e Zd ZdZdd„Zy)ÚHeaderFooterCleanerz/Remove obvious header/footer/single-line noise.c                óâ  — g }|j                  «       D ]¼  }|j                  «       }t        j                  t        j                  |«      rŒ8t        j                  t        j
+                  |«      rt        j                  |«      rŒrt        j                  t        j                  |«      rt        j                  |«      rŒ¬|j                  |«       Œ¾ dj                  |«      j                  «       S )NÚ
+)Ú
+splitlinesÚrstripr   Ú	match_anyÚSINGLE_LINE_HEADER_PATTERNSÚFOOTER_PATTERNSÚis_short_lineÚFUNDING_PATTERNSÚappendÚjoinr)   )r   r   Úcleaned_linesÚlineÚraws        r   r   zHeaderFooterCleaner._clean_impl-   s²   € Ø#%ˆØ—O‘OÖ%ˆDØ—+‘+“-ˆCô ‰œu×@Ñ@À#ÔFØô ‰œu×4Ñ4°cÔ:¼u×?RÑ?RĞSVÔ?WØô ‰œu×5Ñ5°sÔ;Ä×@SÑ@SĞTWÔ@XØà× Ñ  Õ%ğ &ğ" y‰y˜Ó'×-Ñ-Ó/Ğ/r   Nr   r   r   r   r   r+   r+   *   s
+   „ Ù9ô0r   r+   c                  ó   — e Zd ZdZdd„Zy)ÚTrailingWhitespaceCleanerzNormalize whitespace globally.c                óÒ   — |j                  «       D cg c]  }|j                  «       ‘Œ }}dj                  |«      }t        j                  dd|«      }|j                  «       S c c}w )Nr-   z\n{3,}r&   )r.   r/   r6   Úrer   r)   )r   r   ÚlnÚliness       r   r   z%TrailingWhitespaceCleaner._clean_implF   sV   € à'+§¡Ô'8Ó9Ñ'8 —‘•Ğ'8ˆĞ9Øy‰y˜Óˆäv‰vi ¨Ó.ˆØz‰z‹|Ğùò	 :s   “A$Nr   r   r   r   r   r;   r;   C   s
+   „ Ù(ôr   r;   )Ú
+__future__r   r=   Útypingr   Ú'src.core.ingestion.cleaner.base_cleanerr   Úsrc.core.ingestion.cleanerr   r   r   r$   r+   r;   r   r   r   Ú<module>rD      sP   ğİ "Û 	İ İ Cİ ,ô˜ô ô˜ô ô˜Oô ô0˜/ô 0ô2	 õ 	r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\__init__.cpython-312.pyc ==== 
+Ë
+    {-i    ã                    ó   — y )N© r   ó    úOC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__init__.pyÚ<module>r      s   ñr   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\interfaces\i_ingestor.py ==== 
+from abc import ABC, abstractmethod
+from typing import Any
+
+class IIngestor(ABC):
+    """Interface for all ingestion components."""
+
+    @abstractmethod
+    def ingest(self, source_path: str) -> Any:
+        """Convert one document into structured JSON chunks and metadata."""
+        pass
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\interfaces\__init__.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\metadata_extractor_factory.py ==== 
+from __future__ import annotations
+from typing import Any, Dict, List
+import importlib
+import logging
+from pathlib import Path
+
+
+class MetadataExtractorFactory:
+    """
+    Dynamically loads and executes PDF-based metadata extractors.
+    Each extractor implementation must expose a class named <Name>Extractor in
+    src.core.ingestion.metadata.implementations.<name>_extractor.
+    """
+
+    def __init__(self, active_fields: List[str], pdf_root: str | Path):
+        self.logger = logging.getLogger(__name__)
+        self.active_fields = active_fields
+        self.pdf_root = Path(pdf_root).resolve()
+        self.extractors: Dict[str, Any] = {}
+        self._load_extractors()
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_config(cls, cfg: Dict[str, Any]) -> MetadataExtractorFactory:
+        """Initialize factory from ingestion.yaml configuration."""
+        opts = cfg.get("options", {})
+        active = opts.get("metadata_fields", [])
+        pdf_root = cfg.get("paths", {}).get("raw_pdfs", "./data/raw_pdfs")
+        return cls(active_fields=active, pdf_root=pdf_root)
+
+    # ------------------------------------------------------------------
+    def _load_extractors(self) -> None:
+        """Dynamically import extractor implementations for requested fields."""
+        base_pkg = "src.core.ingestion.metadata.implementations"
+
+        mapping = {
+            "title": "title_extractor",
+            "authors": "author_extractor",
+            "year": "year_extractor",
+            "abstract": "abstract_extractor",
+            "detected_language": "language_detector",
+            "file_size": "file_size_extractor",
+            "toc": "toc_extractor",
+        }
+
+        for field in self.active_fields:
+            module_name = mapping.get(field)
+            if not module_name:
+                self.logger.warning(f"No extractor mapping found for field '{field}' â†’ skipped.")
+                continue
+
+            try:
+                module = importlib.import_module(f"{base_pkg}.{module_name}")
+                class_name = "".join([p.capitalize() for p in field.split("_")]) + "Extractor"
+                extractor_class = getattr(module, class_name)
+                self.extractors[field] = extractor_class(base_dir=self.pdf_root)
+                self.logger.debug(f"Loaded extractor: {extractor_class.__name__} for '{field}'")
+            except ModuleNotFoundError:
+                self.logger.warning(f"Implementation missing for '{field}' ({module_name}.py not found).")
+            except Exception as e:
+                self.logger.error(f"Failed to load extractor for '{field}': {e}")
+
+    # ------------------------------------------------------------------
+    def extract_all(self, pdf_path: str) -> Dict[str, Any]:
+        """Run all configured extractors directly on a given PDF file path."""
+        pdf_path = str(Path(pdf_path).resolve())
+        results: Dict[str, Any] = {}
+
+        for field, extractor in self.extractors.items():
+            try:
+                value = extractor.extract(pdf_path)
+                results[field] = value
+            except Exception as e:
+                self.logger.warning(f"Extractor '{field}' failed for {pdf_path}: {e}")
+                results[field] = None
+
+        return results
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__init__.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\abstract_extractor.py ==== 
+"""from __future__ import annotations
+from typing import Optional
+from pathlib import Path
+from lxml import etree
+import re
+import fitz
+
+
+class AbstractExtractor:
+    """Extracts abstract text directly from GROBID TEI XML or PDF XMP metadata."""
+
+    def __init__(self, base_dir: Path | str | None = None):
+        self.base_dir = Path(base_dir).resolve() if base_dir else None
+
+    # ------------------------------------------------------------------
+    def extract(self, pdf_path: str) -> Optional[str]:
+        pdf_file = Path(pdf_path)
+
+        # 1. Try GROBID XML
+        xml_path = self._find_grobid_xml(pdf_file)
+        if xml_path and xml_path.exists():
+            abstract = self._extract_from_grobid(xml_path)
+            if abstract:
+                return abstract
+
+        # 2. Try PDF metadata (some PDFs include "subject"/"keywords"/"description")
+        abstract = self._extract_from_pdf_metadata(pdf_file)
+        if abstract:
+            return abstract
+
+        # 3. Fallback: None (no text heuristics)
+        return None
+
+    # ------------------------------------------------------------------
+    def _extract_from_pdf_metadata(self, pdf_file: Path) -> Optional[str]:
+        """Read abstract-like information from PDF metadata fields."""
+        try:
+            with fitz.open(pdf_file) as doc:
+                meta = doc.metadata or {}
+                for key in ("subject", "Subject", "description", "Description", "keywords", "Keywords"):
+                    val = meta.get(key)
+                    if isinstance(val, str) and len(val.strip()) > 20:
+                        return re.sub(r"\s+", " ", val.strip())
+        except Exception:
+            return None
+        return None
+
+    # ------------------------------------------------------------------
+    def _find_grobid_xml(self, pdf_file: Path) -> Path | None:
+        xml_candidate = pdf_file.with_suffix(".tei.xml")
+        if xml_candidate.exists():
+            return xml_candidate
+        if self.base_dir:
+            alt = self.base_dir / "grobid_xml" / f"{pdf_file.stem}.tei.xml"
+            if alt.exists():
+                return alt
+        return None
+
+    # ------------------------------------------------------------------
+    def _extract_from_grobid(self, xml_path: Path) -> Optional[str]:
+        """Parse TEI XML to extract the abstract section."""
+        try:
+            with open(xml_path, "r", encoding="utf-8") as f:
+                xml = f.read()
+            root = etree.fromstring(xml.encode("utf-8"))
+            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+            abs_text = root.xpath("string(//tei:abstract)", namespaces=ns)
+            if abs_text and len(abs_text.strip()) > 10:
+                return re.sub(r"\s+", " ", abs_text.strip())
+        except Exception:
+            return None
+        return None""".
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\author_extractor.py ==== 
+# src/core/ingestion/metadata/implementations/author_extractor.py
+from __future__ import annotations
+from typing import Any, Dict, List, Optional
+from pathlib import Path
+import fitz
+import logging
+from lxml import etree
+import re
+
+# optional imports
+try:
+    import spacy
+    from spacy.language import Language
+    from spacy.pipeline import EntityRuler
+    SPACY_AVAILABLE = True
+except ImportError:
+    SPACY_AVAILABLE = False
+
+try:
+    from nameparser import HumanName
+    NAMEPARSER_AVAILABLE = True
+except ImportError:
+    NAMEPARSER_AVAILABLE = False
+
+
+class LocalNameVerifier:
+    """Deterministic local fallback for name validation without ML models."""
+
+    TITLE_PATTERN = re.compile(r"^(dr|prof|mr|ms|mrs|herr|frau)\.?\s", re.IGNORECASE)
+    NAME_PATTERN = re.compile(r"^[A-Z][a-z]+(?:[-'\s][A-Z][a-z]+)*$")
+
+    def __init__(self):
+        # extended bad keyword set for academic false positives
+        self.bad_keywords = {
+            "abstract", "introduction", "university", "department", "institute",
+            "school", "machine", "learning", "arxiv", "neural", "transformer",
+            "appendix", "algorithm", "keywords", "vol", "doi", "intelligence",
+            "markov", "chain", "computing", "zentrum", "sciences",
+            "centre", "center", "data", "model", "probability", "network"
+        }
+
+    def is_person_name(self, text: str) -> bool:
+        if not text or len(text) > 80:
+            return False
+        if any(ch.isdigit() for ch in text):
+            return False
+        if any(tok.lower() in self.bad_keywords for tok in text.split()):
+            return False
+
+        if NAMEPARSER_AVAILABLE:
+            try:
+                hn = HumanName(text)
+                if hn.first or hn.last:
+                    return True
+            except Exception:
+                pass
+
+        if self.TITLE_PATTERN.search(text):
+            return True
+        return bool(self.NAME_PATTERN.search(text))
+
+
+class AuthorsExtractor:
+    """Deterministic, language-agnostic author extractor with silent mode (no info logs)."""
+
+    def __init__(self, base_dir: Path | str | None = None):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.base_dir = Path(base_dir).resolve() if base_dir else None
+        self.name_verifier = LocalNameVerifier()
+        self.nlp = None
+
+        if SPACY_AVAILABLE:
+            self.nlp = self._init_spacy_pipeline()
+        else:
+            self.logger.warning("spaCy not installed; PERSON detection disabled.")
+
+    def _init_spacy_pipeline(self):
+        """Try to load spaCy model, else build local EntityRuler fallback."""
+        try:
+            return spacy.load("en_core_web_sm", disable=["tagger", "lemmatizer", "parser"])
+        except Exception:
+            try:
+                return spacy.load("de_core_news_sm", disable=["tagger", "lemmatizer", "parser"])
+            except Exception:
+                self.logger.warning("No spaCy model available; using local EntityRuler fallback.")
+                return self._build_local_person_ruler()
+
+    def _build_local_person_ruler(self) -> "Language":
+        """Constructs a blank English spaCy pipeline with a rule-based PERSON detector."""
+        nlp = spacy.blank("en")
+        ruler = nlp.add_pipe("entity_ruler")
+        patterns = [
+            {"label": "PERSON", "pattern": [{"IS_TITLE": True}, {"IS_TITLE": True}]},
+            {"label": "PERSON", "pattern": [{"IS_TITLE": True}, {"IS_ALPHA": True}, {"IS_ALPHA": True}]},
+            {"label": "PERSON", "pattern": [{"IS_TITLE": True}, {"TEXT": {"REGEX": "^[A-Z][a-z]+\\.$"}}]},
+        ]
+        ruler.add_patterns(patterns)
+        return nlp
+
+    def extract(self, pdf_path: str, parsed_document: Dict[str, Any] | None = None) -> List[str]:
+        candidates: List[str] = []
+
+        if parsed_document and parsed_document.get("grobid_xml"):
+            candidates.extend(self._extract_from_grobid_xml(parsed_document["grobid_xml"]))
+        else:
+            xml_path = self._find_grobid_sidecar(Path(pdf_path))
+            if xml_path:
+                candidates.extend(self._extract_from_grobid_file(xml_path))
+
+        if not candidates:
+            candidates.extend(self._extract_from_pdf_metadata(Path(pdf_path)))
+
+        if not candidates:
+            candidates.extend(self._extract_from_first_page(Path(pdf_path)))
+
+        candidates = [self._normalize(c) for c in candidates if c.strip()]
+        verified = [n for n in candidates if self.name_verifier.is_person_name(n)]
+
+        cleaned = [
+            re.sub(
+                r"\b(Google|Inc\.?|University|Institute|Lab|Labs|Dept\.?|Center|Centre|Zentrum|Sciences?)\b",
+                "",
+                n,
+                flags=re.IGNORECASE
+            ).strip()
+            for n in verified
+        ]
+
+        seen: set[str] = set()
+        return [a for a in cleaned if not (a in seen or seen.add(a))]
+
+    def _find_grobid_sidecar(self, pdf_file: Path) -> Optional[Path]:
+        local = pdf_file.with_suffix(".tei.xml")
+        if local.exists():
+            return local
+        if self.base_dir:
+            alt = self.base_dir / "grobid_xml" / f"{pdf_file.stem}.tei.xml"
+            if alt.exists():
+                return alt
+        return None
+
+    def _extract_from_grobid_file(self, xml_path: Path) -> List[str]:
+        try:
+            return self._extract_from_grobid_xml(xml_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            self.logger.warning(f"GROBID XML read error: {e}")
+            return []
+
+    def _extract_from_grobid_xml(self, xml_text: str) -> List[str]:
+        ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+        try:
+            root = etree.fromstring(xml_text.encode("utf-8"))
+        except Exception as e:
+            self.logger.warning(f"GROBID parse error: {e}")
+            return []
+
+        authors: List[str] = []
+        for xp in [
+            "//tei:analytic//tei:author",
+            "//tei:monogr//tei:author",
+            "//tei:respStmt//tei:author",
+            "//tei:editor",
+        ]:
+            for node in root.xpath(xp, namespaces=ns):
+                fn = node.xpath("string(.//tei:forename)", namespaces=ns).strip()
+                ln = node.xpath("string(.//tei:surname)", namespaces=ns).strip()
+                if fn or ln:
+                    authors.append(f"{fn} {ln}".strip())
+                else:
+                    txt = " ".join(node.xpath(".//text()", namespaces=ns)).strip()
+                    if txt:
+                        authors.extend(self._extract_persons_ner(txt))
+        return authors
+
+    def _extract_from_pdf_metadata(self, pdf_file: Path) -> List[str]:
+        try:
+            with fitz.open(pdf_file) as doc:
+                meta = doc.metadata or {}
+        except Exception as e:
+            self.logger.warning(f"PDF metadata read error: {e}")
+            return []
+        author_field = meta.get("author") or meta.get("Author") or meta.get("authors")
+        return self._extract_persons_ner(str(author_field)) if author_field else []
+
+    def _extract_from_first_page(self, pdf_file: Path) -> List[str]:
+        try:
+            with fitz.open(pdf_file) as doc:
+                if doc.page_count == 0:
+                    return []
+                text = doc.load_page(0).get_text("text")
+        except Exception as e:
+            self.logger.warning(f"First-page read error: {e}")
+            return []
+        text = text.split("Abstract")[0] if "Abstract" in text else text
+        return self._extract_persons_ner(text)
+
+    def _extract_persons_ner(self, text: str) -> List[str]:
+        if not self.nlp or not text.strip():
+            return []
+        doc = self.nlp(text)
+        persons = []
+        for ent in doc.ents:
+            if ent.label_ == "PERSON":
+                if any(e.start <= ent.start < e.end for e in doc.ents if e.label_ in {"ORG", "GPE", "LOC"}):
+                    continue
+                persons.append(ent.text.strip())
+        return [p for p in persons if self._is_name_like(p)]
+
+    def _is_name_like(self, text: str) -> bool:
+        bad_keywords = {
+            "abstract", "introduction", "university", "department", "institute",
+            "arxiv", "model", "learning", "probability", "appendix", "keywords",
+            "ai", "neural", "transformer", "algorithm", "vol",
+            "intelligence", "computing", "zentrum", "sciences", "centre", "center"
+        }
+        if any(tok.lower() in bad_keywords for tok in text.split()):
+            return False
+        if any(ch.isdigit() for ch in text):
+            return False
+        return 1 <= len(text.split()) <= 5 and text[0].isupper()
+
+    def _normalize(self, s: str) -> str:
+        """Normalize spacing and special characters."""
+        return " ".join(s.replace("â€¢", "").replace("â€ ", "").split()).strip()
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\file_size_extractor.py ==== 
+from __future__ import annotations
+import os
+from pathlib import Path
+
+
+class FileSizeExtractor:
+    """Extracts the exact file size (in bytes) directly from the PDF file."""
+
+    def __init__(self, base_dir: Path | str | None = None):
+        self.base_dir = Path(base_dir).resolve() if base_dir else None
+
+    # ------------------------------------------------------------------
+    def extract(self, pdf_path: str) -> int | None:
+        """Return the file size of the given PDF file in bytes."""
+        pdf_file = Path(pdf_path)
+        try:
+            if not pdf_file.is_file():
+                return None
+            return pdf_file.stat().st_size
+        except Exception:
+            return None
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\language_detector.py ==== 
+from __future__ import annotations
+from pathlib import Path
+from typing import Optional
+import re
+import fitz
+
+try:
+    from langdetect import detect
+    LANGDETECT_AVAILABLE = True
+except ImportError:
+    LANGDETECT_AVAILABLE = False
+
+
+class DetectedLanguageExtractor:
+    """Detects the dominant document language from PDF text or XMP metadata."""
+
+    def __init__(self, base_dir: Path | str | None = None):
+        self.base_dir = Path(base_dir).resolve() if base_dir else None
+
+    # ------------------------------------------------------------------
+    def extract(self, pdf_path: str) -> Optional[str]:
+        """Identify document language via PDF content or metadata."""
+        pdf_file = Path(pdf_path)
+
+        # 1. Try PDF XMP metadata
+        lang = self._extract_from_metadata(pdf_file)
+        if lang:
+            return lang
+
+        # 2. Try text-based detection (without parser)
+        lang = self._detect_from_text(pdf_file)
+        if lang:
+            return lang
+
+        return None
+
+    # ------------------------------------------------------------------
+    def _extract_from_metadata(self, pdf_file: Path) -> Optional[str]:
+        """Check embedded language fields in PDF metadata."""
+        try:
+            with fitz.open(pdf_file) as doc:
+                meta = doc.metadata or {}
+                for key in ("language", "Language", "lang", "Lang"):
+                    val = meta.get(key)
+                    if val and isinstance(val, str):
+                        val_norm = val.lower().strip()
+                        if val_norm.startswith("en"):
+                            return "en"
+                        if val_norm.startswith("de"):
+                            return "de"
+        except Exception:
+            return None
+        return None
+
+    # ------------------------------------------------------------------
+    def _detect_from_text(self, pdf_file: Path) -> Optional[str]:
+        """Extract small text sample from first pages and apply language detection."""
+        sample_text = ""
+        try:
+            with fitz.open(pdf_file) as doc:
+                max_pages = min(3, len(doc))
+                for i in range(max_pages):
+                    sample_text += doc.load_page(i).get_text("text") + "\n"
+        except Exception:
+            return None
+
+        if not sample_text or len(sample_text.strip()) < 30:
+            return None
+
+        # Use langdetect if installed
+        if LANGDETECT_AVAILABLE:
+            try:
+                lang = detect(sample_text)
+                if lang in ("en", "de"):
+                    return lang
+            except Exception:
+                pass
+
+        # Simple regex-based fallback
+        text_lower = sample_text.lower()
+        if re.search(r"\b(und|nicht|sein|dass|werden|ein|eine|mit|auf|fÃ¼r|dem|den|das|ist|sind|der|die|das)\b", text_lower):
+            return "de"
+        if re.search(r"\b(the|and|of|for|with|from|that|this|by|is|are|we|deep|learning|language|model)\b", text_lower):
+            return "en"
+        return None
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\title_extractor.py ==== 
+# ==============================================================
+# src/core/ingestion/metadata/implementations/title_extractor.py
+# ==============================================================
+
+from __future__ import annotations
+from pathlib import Path
+from typing import Optional
+import fitz
+import re
+from lxml import etree
+
+
+class TitleExtractor:
+    """
+    Robust, deterministic extractor for scientific paper titles.
+    Filename fallback *is not used* (explizit ausgeschlossen).
+    """
+
+    def __init__(self, base_dir: Path | str | None = None):
+        self.base_dir = Path(base_dir).resolve() if base_dir else None
+
+    def extract(self, pdf_path: str) -> Optional[str]:
+        """
+        Extract the most probable title of a given PDF.
+        Priority:
+          1. PDF metadata
+          2. GROBID TEI XML
+          3. Layout + heuristic on first page
+        Returns None if keine verlÃ¤ssliche Titel gefunden wird.
+        """
+        pdf_file = Path(pdf_path)
+
+        # 1. PDF metadata
+        title = self._extract_from_pdf_metadata(pdf_file)
+        if self._is_valid(title):
+            return title
+
+        # 2. GROBID TEI XML
+        xml_path = self._find_grobid_xml(pdf_file)
+        if xml_path and xml_path.exists():
+            grobid_title = self._extract_from_grobid(xml_path)
+            if self._is_valid(grobid_title):
+                return grobid_title
+
+        # 3. Layout + heuristic on first page
+        title_from_layout = self._extract_from_first_page_layout(pdf_file)
+        if self._is_valid(title_from_layout):
+            return title_from_layout
+
+        # Keine Datei-Name Fallback!
+        return None
+
+    def _extract_from_pdf_metadata(self, pdf_file: Path) -> Optional[str]:
+        """Extract title from embedded PDF metadata fields."""
+        try:
+            with fitz.open(pdf_file) as doc:
+                meta = doc.metadata or {}
+                title_meta = meta.get("title") or meta.get("Title")
+                if title_meta:
+                    cleaned = self._normalize(title_meta)
+                    if self._is_valid(cleaned):
+                        return cleaned
+        except Exception:
+            return None
+        return None
+
+    def _find_grobid_xml(self, pdf_file: Path) -> Optional[Path]:
+        """Locate associated GROBID TEI XML file (same stem .tei.xml)."""
+        candidate1 = pdf_file.with_suffix(".tei.xml")
+        if candidate1.exists():
+            return candidate1
+        if self.base_dir:
+            alt = self.base_dir / "grobid_xml" / f"{pdf_file.stem}.tei.xml"
+            if alt.exists():
+                return alt
+        return None
+
+    def _extract_from_grobid(self, xml_path: Path) -> Optional[str]:
+        """Extract title from structured GROBID TEI XML."""
+        try:
+            xml_content = xml_path.read_text(encoding="utf-8")
+            root = etree.fromstring(xml_content.encode("utf-8"))
+            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+            xpaths = [
+                "//tei:analytic/tei:title[@type='main']",
+                "//tei:monogr/tei:title[@type='main']",
+                "//tei:titleStmt/tei:title[@type='main']",
+                "//tei:titleStmt/tei:title"
+            ]
+            for xp in xpaths:
+                t = root.xpath(f"string({xp})", namespaces=ns)
+                cleaned = self._normalize(t)
+                if self._is_valid(cleaned):
+                    return cleaned
+        except Exception:
+            return None
+        return None
+
+    def _extract_from_first_page_layout(self, pdf_file: Path) -> Optional[str]:
+        """
+        Layout + heuristic extraction: choose candidate block(s) from first page based on
+        font size, vertical position, then filter out author/affiliation lines.
+        """
+        try:
+            with fitz.open(pdf_file) as doc:
+                if doc.page_count == 0:
+                    return None
+                page = doc.load_page(0)
+                # extract dict to get blocks with font size / positions
+                blocks = page.get_text("dict")["blocks"]
+        except Exception:
+            return None
+
+        # Collect text segments with font size & position
+        candidates: list[tuple[float, float, str]] = []  # (fontsize, y0, text)
+        for b in blocks:
+            if "lines" not in b:
+                continue
+            for l in b["lines"]:
+                for span in l["spans"]:
+                    text = span["text"].strip()
+                    if not text:
+                        continue
+                    fontsize = span.get("size", 0)
+                    y0 = span.get("origin", (0, 0))[1]
+                    candidates.append((fontsize, y0, text))
+
+        if not candidates:
+            return None
+
+        # Sort by fontsize descending, then y0 ascending (top of page)
+        candidates.sort(key=lambda x: (-x[0], x[1]))
+
+        # Choose top-N spans (e.g., top 3) as potential title block
+        top_spans = candidates[:3]
+        combined = " ".join(span[2] for span in top_spans)
+        cleaned = self._normalize(combined)
+
+        # Filter out if looks like author/affiliation
+        if self._looks_like_author_block(cleaned):
+            # try next spans
+            if len(candidates) > 3:
+                alt_spans = candidates[3:6]
+                combined2 = " ".join(span[2] for span in alt_spans)
+                cleaned2 = self._normalize(combined2)
+                if self._is_valid(cleaned2) and not self._looks_like_author_block(cleaned2):
+                    return cleaned2
+            return None
+
+        if self._is_valid(cleaned):
+            return cleaned
+
+        return None
+
+    def _looks_like_author_block(self, text: str) -> bool:
+        """Heuristic to detect if a line/block is likely authors/affiliations rather than title."""
+        if not text:
+            return False
+        # frequent keywords in affiliations/authors
+        if re.search(r"\b(university|dept|department|institute|school|college|laboratory|lab|affiliat|author|authors?)\b", text, re.I):
+            return True
+        # many names separated by commas/and before a newline
+        if re.match(r"[A-Z][a-z]+(\s[A-Z][a-z]+)+,?\s(and|&)\s[A-Z][a-z]+", text):
+            return True
+        return False
+
+    def _looks_like_title(self, text: str) -> bool:
+        """Heuristic: check if a line looks like a plausible title."""
+        if not text or len(text) < 5 or len(text) > 250:
+            return False
+        # filter out common non-title keywords
+        forbidden = r"\b(abstract|introduction|keywords?|acknowledgements|references?)\b"
+        if re.search(forbidden, text, re.I):
+            return False
+        word_count = len(text.split())
+        if word_count < 3 or word_count > 30:
+            return False
+        # Must start with uppercase letter (simplified)
+        if not text[0].isupper():
+            return False
+        return True
+
+    def _normalize(self, text: Optional[str]) -> str:
+        """Normalize whitespace, remove soft-hyphens and ligatures."""
+        if not text:
+            return ""
+        # merge hyphen-line breaks
+        text = re.sub(r"(\w)-\s+(\w)", r"\1\2", text)
+        text = text.replace("ï¬", "fi").replace("ï¬‚", "fl")
+        text = text.replace("_", " ")
+        text = re.sub(r"\s+", " ", text)
+        # Remove arXiv IDs and version tags
+        text = re.sub(r"arXiv:\d+\.\d+", "", text)  # Remove arXiv ID
+        text = re.sub(r"v\d+", "", text)  # Remove version tags
+        return text.strip()
+
+    def _is_valid(self, text: Optional[str]) -> bool:
+        """Check if a title candidate is semantically plausible."""
+        if not text:
+            return False
+        t = text.strip()
+
+        # Title should not be too short
+        if len(t) < 10:
+            return False
+        # Title should have a reasonable word count
+        if len(t.split()) < 3 or len(t.split()) > 30:
+            return False
+
+        # Exclude if it's just numbers or version identifiers
+        if re.match(r"^[0-9._-]+$", t):
+            return False
+
+        # Exclude arXiv IDs and DOIs
+        if re.search(r"arXiv:\d+\.\d+", t) or re.search(r"doi:\S+", t, re.IGNORECASE):
+            return False
+
+        # Exclude non-title fragments like "ENTREE, P2 Pl"
+        if re.search(r"(P2\sPl|ENTREE|v\d+)", t, re.IGNORECASE):
+            return False
+
+        return True
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\toc_extractor.py ==== 
+from __future__ import annotations
+from typing import List, Dict, Any
+import fitz
+import re
+from pathlib import Path
+
+
+class TocExtractor:
+    """Extracts table of contents (TOC) entries directly from a PDF using PyMuPDF."""
+
+    def __init__(self, base_dir: Path | str | None = None):
+        self.base_dir = Path(base_dir).resolve() if base_dir else None
+
+    # ------------------------------------------------------------------
+    def extract(self, pdf_path: str) -> List[Dict[str, Any]]:
+        """Return structured TOC entries, purely PDF-based."""
+        pdf_file = Path(pdf_path)
+        toc_entries: List[Dict[str, Any]] = []
+        try:
+            with fitz.open(pdf_file) as doc:
+                toc = doc.get_toc(simple=True)
+                if toc:
+                    for level, title, page in toc:
+                        title_clean = re.sub(r"\s+", " ", title.strip())
+                        if title_clean:
+                            toc_entries.append(
+                                {"level": int(level), "title": title_clean, "page": int(page)}
+                            )
+                    return toc_entries
+
+                # fallback to heuristic textual TOC
+                toc_entries = self._extract_textual_toc(doc)
+                return toc_entries
+
+        except Exception as e:
+            print(f"[WARN] Failed to extract TOC from {pdf_file}: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    def _extract_textual_toc(self, doc: fitz.Document) -> List[Dict[str, Any]]:
+        """Detect textual TOCs on the first pages when outline metadata is missing."""
+        toc_entries: List[Dict[str, Any]] = []
+        try:
+            max_pages = min(5, len(doc))
+            pattern = re.compile(r"^\s*(\d{0,2}\.?)+\s*[A-ZÃ„Ã–Ãœa-zÃ¤Ã¶Ã¼].{3,}\s+(\d{1,3})\s*$")
+
+            for i in range(max_pages):
+                text = doc.load_page(i).get_text("text")
+                if not re.search(r"(Inhalt|Contents|Table of Contents)", text, re.I):
+                    continue
+                for line in text.splitlines():
+                    if pattern.match(line.strip()):
+                        parts = re.split(r"\s{2,}", line.strip())
+                        if len(parts) >= 2:
+                            title = re.sub(r"^\d+(\.\d+)*\s*", "", parts[0])
+                            page = re.findall(r"\d+", parts[-1])
+                            page_num = int(page[0]) if page else None
+                            toc_entries.append(
+                                {"level": 1, "title": title.strip(), "page": page_num}
+                            )
+            return toc_entries
+
+        except Exception:
+            return []
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\year_extractor.py ==== 
+from __future__ import annotations
+import re
+import datetime
+from typing import Any
+from pathlib import Path
+import fitz
+from lxml import etree
+
+CURRENT_YEAR = datetime.datetime.now().year
+
+
+class YearExtractor:
+    """Extracts publication year strictly from PDF or GROBID XML."""
+
+    def __init__(self, base_dir: Path | str | None = None):
+        self.base_dir = Path(base_dir).resolve() if base_dir else None
+
+    # ------------------------------------------------------------------
+    def extract(self, pdf_path: str) -> str | None:
+        pdf_file = Path(pdf_path)
+
+        # 1. Try GROBID XML
+        xml_path = self._find_grobid_xml(pdf_file)
+        if xml_path and xml_path.exists():
+            year = self._extract_from_grobid(xml_path)
+            if year:
+                return year
+
+        # 2. Try PDF metadata
+        year = self._extract_from_pdf_metadata(pdf_file)
+        if year:
+            return year
+
+        # 3. Try from filename
+        m = re.search(r"(19|20)\d{2}", pdf_file.name)
+        if m:
+            y = int(m.group(0))
+            if 1900 <= y <= CURRENT_YEAR:
+                return str(y)
+
+        return None
+
+    # ------------------------------------------------------------------
+    def _extract_from_pdf_metadata(self, pdf_file: Path) -> str | None:
+        """Extract year directly from PDF XMP metadata."""
+        try:
+            with fitz.open(pdf_file) as doc:
+                meta = doc.metadata or {}
+                for key in ("creationDate", "modDate", "CreationDate", "date"):
+                    val = meta.get(key)
+                    if not val:
+                        continue
+                    m = re.search(r"(19|20)\d{2}", val)
+                    if m:
+                        y = int(m.group(0))
+                        if 1900 <= y <= CURRENT_YEAR:
+                            return str(y)
+        except Exception:
+            return None
+        return None
+
+    # ------------------------------------------------------------------
+    def _find_grobid_xml(self, pdf_file: Path) -> Path | None:
+        """Locate optional GROBID TEI XML next to the PDF or in grobid_xml/."""
+        xml_candidate = pdf_file.with_suffix(".tei.xml")
+        if xml_candidate.exists():
+            return xml_candidate
+        if self.base_dir:
+            alt = self.base_dir / "grobid_xml" / f"{pdf_file.stem}.tei.xml"
+            if alt.exists():
+                return alt
+        return None
+
+    # ------------------------------------------------------------------
+    def _extract_from_grobid(self, xml_path: Path) -> str | None:
+        """Parse GROBID TEI XML for publication date."""
+        try:
+            with open(xml_path, "r", encoding="utf-8") as f:
+                xml = f.read()
+            root = etree.fromstring(xml.encode("utf-8"))
+            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+            years = root.xpath("//tei:sourceDesc//tei:date/@when", namespaces=ns)
+            for y in years:
+                y = y.strip()
+                if len(y) >= 4 and y[:4].isdigit():
+                    year = int(y[:4])
+                    if 1900 <= year <= CURRENT_YEAR:
+                        return str(year)
+        except Exception:
+            return None
+        return None
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__init__.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_abstract_extractor.py ==== 
+"""from __future__ import annotations
+from typing import Any, Dict
+from lxml import etree
+import re
+from src.core.ingestion.metadata.interfaces.i_abstract_extractor import IAbstractExtractor
+
+class AbstractExtractor(IAbstractExtractor):
+    """Extracts abstract section using GROBID TEI XML."""
+
+    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
+        xml_data = parsed_document.get("grobid_xml")
+        if not xml_data or not xml_data.strip().startswith("<"):
+            return None
+
+        try:
+            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+            root = etree.fromstring(xml_data.encode("utf8"))
+            # collect all text under <abstract> or <div type='abstract'>
+            xpath_candidates = [
+                "//tei:abstract",
+                "//tei:div[@type='abstract']",
+                "//tei:profileDesc/tei:abstract",
+            ]
+            for path in xpath_candidates:
+                text = root.xpath(f"string({path})", namespaces=ns)
+                if text and len(text.strip()) > 20:
+                    cleaned = re.sub(r"\s+", " ", text.strip())
+                    return cleaned
+        except Exception:
+            return None
+        return None
+""".
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_author_extractor.py ==== 
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List
+
+class IAuthorExtractor(ABC):
+    """Interface for extracting document authors."""
+
+    @abstractmethod
+    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> List[str]:
+        """Extract author names as a list of strings."""
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_file_size_extractor.py ==== 
+from abc import ABC, abstractmethod
+from typing import Any, Dict
+
+class IFileSizeExtractor(ABC):
+    """Interface for extracting the file size of a PDF."""
+
+    @abstractmethod
+    def extract(self, pdf_path: str) -> int | None:
+        """Return file size in bytes."""
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_language_detector.py ==== 
+from abc import ABC, abstractmethod
+from typing import Any, Dict
+
+class ILanguageDetector(ABC):
+    """Interface for detecting the main document language."""
+
+    @abstractmethod
+    def detect(self, text: str, metadata: Dict[str, Any] | None = None) -> str | None:
+        """Detect the dominant language code (e.g. 'en', 'de')."""
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_title_extractor.py ==== 
+from abc import ABC, abstractmethod
+from typing import Any, Dict
+
+class ITitleExtractor(ABC):
+    """Interface for extracting the main document title."""
+
+    @abstractmethod
+    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
+        """Extract the document title."""
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_year_extractor.py ==== 
+from abc import ABC, abstractmethod
+from typing import Any, Dict
+
+class IYearExtractor(ABC):
+    """Interface for extracting publication year."""
+
+    @abstractmethod
+    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
+        """Extract the publication year as string (e.g. '2023')."""
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\toc_extractor_interface.py ==== 
+from __future__ import annotations
+from typing import Any, Dict, List
+from abc import ABC, abstractmethod
+
+
+class TocExtractorInterface(ABC):
+    """Interface for table-of-contents extractors."""
+
+    @abstractmethod
+    def extract(self, pdf_path: str, parsed_document: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+        """
+        Extracts the table of contents (TOC) from a given PDF file.
+
+        Returns:
+            A list of dictionaries with keys:
+                - level: int
+                - title: str
+                - page: int
+        """
+        pass
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\__init__.py ==== 
+# Expose all interfaces for clean import
+from .i_title_extractor import ITitleExtractor
+from .i_author_extractor import IAuthorExtractor
+from .i_year_extractor import IYearExtractor
+from .i_abstract_extractor import IAbstractExtractor
+from .i_language_detector import ILanguageDetector
+from .i_file_size_extractor import IFileSizeExtractor
+from .i_has_ocr_extractor import IHasOcrExtractor
+
+__all__ = [
+    "ITitleExtractor",
+    "IAuthorExtractor",
+    "IYearExtractor",
+    "IAbstractExtractor",
+    "ILanguageDetector",
+    "IFileSizeExtractor",
+    "IHasOcrExtractor",
+]
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\utils\name_verifier.py ==== 
+import re
+from nameparser import HumanName
+
+class LocalNameVerifier:
+    """Local deterministic fallback for name validation."""
+
+    TITLE_PATTERN = re.compile(r"^(dr|prof|mr|ms|mrs|herr|frau)\.?\s", re.IGNORECASE)
+    NAME_PATTERN = re.compile(r"^[A-Z][a-z]+(?:[-'\s][A-Z][a-z]+)*$")
+
+    def is_person_name(self, text: str) -> bool:
+        if not text or len(text) > 60:
+            return False
+        if any(ch.isdigit() for ch in text):
+            return False
+
+        hn = HumanName(text)
+        # requires at least one capitalized component
+        valid_structure = bool(hn.first or hn.last)
+        valid_chars = bool(self.NAME_PATTERN.search(text)) or bool(self.TITLE_PATTERN.search(text))
+        invalid_tokens = any(tok.lower() in {
+            "university", "institute", "department", "school",
+            "machine", "learning", "arxiv", "neural", "transformer",
+            "abstract", "introduction", "appendix"
+        } for tok in text.split())
+
+        return valid_structure and valid_chars and not invalid_tokens
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\parallel_pdf_parser.py ==== 
+# src/core/ingestion/parser/parallel_pdf_parser.py
+from __future__ import annotations
+import concurrent.futures
+import logging
+import multiprocessing
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import json
+
+from src.core.ingestion.parser.parser_factory import ParserFactory
+
+
+class ParallelPdfParser:
+    """CPU-based parallel parser orchestrator using multiple processes."""
+
+    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None):
+        self.config = config
+        self.logger = logger or logging.getLogger(__name__)
+        self.parser_factory = ParserFactory(config, logger=self.logger)
+
+        parallel_cfg = config.get("options", {}).get("parallelism", "auto")
+        if isinstance(parallel_cfg, int) and parallel_cfg > 0:
+            self.num_workers = parallel_cfg
+        else:
+            self.num_workers = max(1, multiprocessing.cpu_count() - 1)
+
+        self.logger.info(f"Initialized ParallelPdfParser with {self.num_workers} worker(s)")
+
+    # ------------------------------------------------------------------
+    def parse_all(self, pdf_dir: str | Path, output_dir: str | Path) -> List[Dict[str, Any]]:
+        pdf_dir, output_dir = Path(pdf_dir), Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pdf_files = sorted(pdf_dir.glob("*.pdf"))
+        if not pdf_files:
+            self.logger.warning(f"No PDFs found in {pdf_dir}")
+            return []
+
+        results: List[Dict[str, Any]] = []
+        with concurrent.futures.ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+            future_to_pdf = {executor.submit(self._parse_single, str(pdf)): pdf for pdf in pdf_files}
+            for future in concurrent.futures.as_completed(future_to_pdf):
+                pdf = future_to_pdf[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                    out_path = output_dir / f"{pdf.stem}.parsed.json"
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        json.dump(result, f, ensure_ascii=False, indent=2)
+                    self.logger.info(f"âœ“ Parsed {pdf.name}")
+                except Exception as e:
+                    self.logger.error(f"âœ— Failed to parse {pdf.name}: {e}")
+
+        return results
+
+    # ------------------------------------------------------------------
+    def _parse_single(self, pdf_path: str) -> Dict[str, Any]:
+        parser = self.parser_factory.create_parser()
+        return parser.parse(pdf_path)
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\parser_factory.py ==== 
+from __future__ import annotations
+from typing import Dict, Any, Optional
+import logging
+import multiprocessing
+
+from src.core.ingestion.parser.interfaces.i_pdf_parser import IPdfParser
+from src.core.ingestion.parser.pymupdf_parser import PyMuPDFParser
+
+
+class ParserFactory:
+    """
+    Factory for creating local PDF parsers and optional parallel orchestrators.
+    Handles YAML parameters like 'parallelism' and parser configuration.
+    """
+
+    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None):
+        self.config = config
+        self.logger = logger or logging.getLogger(__name__)
+        opts = config.get("options", {})
+
+        self.parser_mode = opts.get("pdf_parser", "auto").lower()
+        self.parallelism = opts.get("parallelism", "auto")
+        self.language = opts.get("language", "auto")
+        self.exclude_toc = True  # enforced globally
+        self.max_pages = opts.get("max_pages", None)
+
+        # determine optimal CPU usage
+        if isinstance(self.parallelism, int) and self.parallelism > 0:
+            self.num_workers = self.parallelism
+        else:
+            self.num_workers = max(1, multiprocessing.cpu_count() - 1)
+
+        self.logger.info(
+            f"ParserFactory initialized | mode={self.parser_mode}, "
+            f"workers={self.num_workers}, exclude_toc={self.exclude_toc}"
+        )
+
+    # ------------------------------------------------------------------
+    def create_parser(self) -> IPdfParser:
+        """Return configured parser instance (currently only PyMuPDF)."""
+        if self.parser_mode in ("fitz", "auto"):
+            return PyMuPDFParser(exclude_toc=self.exclude_toc, max_pages=self.max_pages)
+        raise ValueError(f"Unsupported parser mode: {self.parser_mode}")
+
+    # ------------------------------------------------------------------
+    def create_parallel_parser(self):
+        """Return a parallel orchestrator that distributes parsing tasks."""
+        from src.core.ingestion.parser.parallel_pdf_parser import ParallelPdfParser
+        return ParallelPdfParser(self.config, logger=self.logger)
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\pymupdf_parser.py ==== 
+from __future__ import annotations
+from typing import Dict, Any, List
+from pathlib import Path
+import fitz  # PyMuPDF
+import re
+from src.core.ingestion.parser.interfaces.i_pdf_parser import IPdfParser
+
+
+class PyMuPDFParser(IPdfParser):
+    """Robust PDF parser using PyMuPDF with layout-based filtering of non-body text."""
+
+    def __init__(self, exclude_toc: bool = True, max_pages: int | None = None):
+        self.exclude_toc = exclude_toc
+        self.max_pages = max_pages
+
+    # ------------------------------------------------------------------
+    def parse(self, pdf_path: str) -> Dict[str, Any]:
+        """Extract clean body text (excluding title, abstract, headers) and minimal metadata."""
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"File not found: {pdf_path}")
+
+        doc = fitz.open(pdf_path)
+        text_blocks: List[str] = []
+        toc_titles = self._extract_toc_titles(doc) if self.exclude_toc else []
+
+        for page_index, page in enumerate(doc):
+            if self.max_pages and page_index >= self.max_pages:
+                break
+            blocks = page.get_text("blocks")
+            page_body = self._extract_body_from_blocks(blocks)
+            if not page_body:
+                continue
+            # Skip ToC-like pages entirely
+            if self.exclude_toc and self._looks_like_toc_page(page_body, toc_titles):
+                continue
+            text_blocks.append(page_body)
+
+        clean_text = "\n".join(t for t in text_blocks if t)
+        clean_text = self._remove_residual_metadata(clean_text)
+
+        metadata = {
+            "source_file": str(pdf_path.name),
+            "page_count": len(doc),
+            "has_toc": bool(doc.get_toc()),
+        }
+
+        doc.close()
+        return {"text": clean_text.strip(), "metadata": metadata}
+
+    # ------------------------------------------------------------------
+    def _extract_toc_titles(self, doc) -> List[str]:
+        """Extract TOC titles to later filter out from main text."""
+        toc = doc.get_toc()
+        return [entry[1].strip() for entry in toc if len(entry) >= 2]
+
+    # ------------------------------------------------------------------
+    def _looks_like_toc_page(self, text: str, toc_titles: List[str]) -> bool:
+        """Heuristic to detect table of contents pages."""
+        if not text or len(text) < 100:
+            return False
+        if re.search(r"(?i)\btable\s+of\s+contents\b|\binhaltsverzeichnis\b", text):
+            return True
+        match_count = sum(1 for t in toc_titles if t and t in text)
+        return match_count > 5
+
+    # ------------------------------------------------------------------
+    def _extract_body_from_blocks(self, blocks: list) -> str:
+        """Select only text blocks likely belonging to main body based on layout and heuristics."""
+        # Determine median vertical position â†’ ignore top 15â€“20%
+        y_positions = [b[1] for b in blocks if len(b) >= 5]
+        if not y_positions:
+            return ""
+        page_top_cutoff = sorted(y_positions)[int(len(y_positions) * 0.15)]
+        candidate_blocks = []
+
+        for (x0, y0, x1, y1, text, *_ ) in blocks:
+            if not text or len(text.strip()) < 30:
+                continue
+            # Exclude upper-page fragments (titles, authors, abstract)
+            if y1 < page_top_cutoff + 100:
+                if re.search(r"(?i)(abstract|title|author|doi|keywords|arxiv|university|faculty|institute|version)", text):
+                    continue
+                if len(text.strip().split()) < 20:
+                    continue
+            candidate_blocks.append(text.strip())
+
+        return "\n".join(candidate_blocks)
+
+    # ------------------------------------------------------------------
+    def _remove_residual_metadata(self, text: str) -> str:
+        """Remove residual header/footer and metadata-like fragments."""
+        patterns = [
+            r"(?im)^table\s+of\s+contents.*$",
+            r"(?im)^inhaltsverzeichnis.*$",
+            r"(?im)^\s*(abstract|zusammenfassung)\b.*?(?=\n[A-Z][a-z]|$)",
+            r"(?im)^title\s*:.*$",
+            r"(?im)^author\s*:.*$",
+            r"(?im)^\s*(version|revision|doi|arxiv).*?$",
+            r"(?im)\bpage\s+\d+\b",
+            r"(?m)^\s*\d+\s*$",
+        ]
+        for p in patterns:
+            text = re.sub(p, "", text, flags=re.DOTALL)
+        text = re.sub(r"\n{2,}", "\n\n", text)
+        return text.strip()
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\__init__.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\interfaces\i_pdf_parser.py ==== 
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import Dict, Any
+
+
+class IPdfParser(ABC):
+    """Interface for all local PDF parsers."""
+
+    @abstractmethod
+    def parse(self, pdf_path: str) -> Dict[str, Any]:
+        """Parse a PDF file and return structured output with text and metadata."""
+        raise NotImplementedError
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\utils\file_utils.py ==== 
+# src/core/ingestion/utils/file_utils.py
+from __future__ import annotations
+from pathlib import Path
+
+
+def ensure_dir(path: Path):
+    """Create directory if it doesn't exist."""
+    path.mkdir(parents=True, exist_ok=True)
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\utils\language_detector.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\utils\performance_timer.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\utils\__init__.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\__pycache__\config_loader.cpython-312.pyc ==== 
+Ë
+    ¸ïi  ã                  óX   — d dl mZ d dlZd dlZd dlmZ d dlmZmZ  G d„ d«      Z	dd„Z
+y)	é    )ÚannotationsN)ÚPath)ÚAnyÚDictc                  ó:   — e Zd ZdZdd„Zd	d„Zd
+d„Zdd„Zddd„Zy)ÚConfigLoaderz‹
+    Loads YAML configuration files and replaces ${base_dir} / ${PROJECT_ROOT}
+    placeholders only when they are explicitly present.
+    c                óÀ  — t        |«      | _        | j                  j                  «       st        d| j                  › «      ‚t	        | j                  dd¬«      5 }t        j                  |«      xs i | _        d d d «       | j                  «       | _	        | j                  j                  di «      }|j                  dd«      }| j                  |«      | _        | j                  | j                  «      | _        t        d«       | j                  j                  d	i «      j!                  «       D ]  \  }}t        d
+|› d|› «       Œ t        «        y # 1 sw Y   ŒÛxY w)NzConfiguration file not found: Úrzutf-8)ÚencodingÚglobalÚbase_dirú${PROJECT_ROOT}z
+[DEBUG] Expanded paths:Úpathsz  z: )r   ÚpathÚexistsÚFileNotFoundErrorÚopenÚyamlÚ	safe_loadÚ_rawÚ_detect_project_rootÚproject_rootÚgetÚ_expand_single_varr   Ú_expand_varsÚconfigÚprintÚitems)Úselfr   ÚfÚglobal_sectionÚbase_dir_valueÚkÚvs          úLC:\Users\katha\historical-drift-analyzer\src\core\ingestion\config_loader.pyÚ__init__zConfigLoader.__init__   s  € Ü˜“JˆŒ	Øy‰y×ÑÔ!Ü#Ğ&DÀTÇYÁYÀKĞ$PÓQĞQä$—)‘)˜S¨7Õ3°qÜŸ™ qÓ)Ò/¨RˆDŒI÷ 4ğ !×5Ñ5Ó7ˆÔğ Ÿ™Ÿ™ x°Ó4ˆØ'×+Ñ+¨JĞ8IÓJˆØ×/Ñ/°Ó?ˆŒğ ×'Ñ'¨¯	©	Ó2ˆŒô 	Ğ)Ô*Ø—K‘K—O‘O G¨RÓ0×6Ñ6Ö8‰DˆAˆqÜBqc˜˜A˜3-Õ ğ 9ä÷% 4Ğ3ús   ÁEÅEc                óÊ   — | j                   j                  «       }d|j                  v r0|j                  j                  d«      }t	        |j                  d|  S |j
+                  S )z)Return the root directory of the project.ÚconfigsN)r   ÚresolveÚpartsÚindexr   Úparent)r   ÚpÚidxs      r%   r   z!ConfigLoader._detect_project_root(   sP   € àI‰I×ÑÓˆØ˜Ÿ™ÑØ—'‘'—-‘- 	Ó*ˆCÜ˜Ÿ™  #˜Ğ'Ğ'Øx‰xˆó    c                ól  — t        |t        «      rd|vr|S t        | j                  «      t        | j                  «      t        | j                  «      t        | j                  «      dœ}|j                  «       D ]  \  }}|j	                  ||«      }Œ t        t        |«      j                  «       «      S )z9Replace placeholders only if ${...} patterns are present.z${)r   z${project_root}z${BASE_DIR}z${base_dir})Ú
+isinstanceÚstrr   r   Úreplacer   r)   )r   ÚvalueÚreplacementsÚplaceholderÚreals        r%   r   zConfigLoader._expand_single_var1   s›   € ä˜%¤Ô%¨°UÑ):ØˆLô  # 4×#4Ñ#4Ó5Ü" 4×#4Ñ#4Ó5Ü˜t×0Ñ0Ó1Ü˜t×0Ñ0Ó1ñ	
+ˆğ ".×!3Ñ!3Ö!5ÑˆK˜Ø—M‘M +¨tÓ4‰Eğ "6ä”4˜“;×&Ñ&Ó(Ó)Ğ)r/   c                óB  — t        |t        «      r3|j                  «       D ci c]  \  }}|| j                  |«      “Œ c}}S t        |t        «      r|D cg c]  }| j                  |«      ‘Œ c}S t        |t
+        «      r| j                  |«      S |S c c}}w c c}w )z6Recursively replace placeholders in nested structures.)r1   Údictr   r   Úlistr2   r   )r   Údatar#   r$   s       r%   r   zConfigLoader._expand_varsB   s   € ädœDÔ!Ø8<¿
+¹
+¼ÔE¹±°°1At×(Ñ(¨Ó+Ñ+¸ÒEĞEÜ˜œdÔ#Ù26Ó7±$¨QD×%Ñ% aÕ(°$Ñ7Ğ7Ü˜œcÔ"Ø×*Ñ*¨4Ó0Ğ0àˆKùó Fùâ7s   ¤BÁBNc                ó:   — | j                   j                  ||«      S )z!Access top-level config sections.)r   r   )r   ÚkeyÚdefaults      r%   r   zConfigLoader.getN   s   € à{‰{‰˜s GÓ,Ğ,r/   )r   r2   )Úreturnr   )r4   r2   r?   r2   )r;   r   r?   r   )N)r=   r2   r>   r   r?   r   )	Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r&   r   r   r   r   © r/   r%   r   r      s    „ ñó
+ó4ó*ó"	õ-r/   r   c                ó,   — t        | «      j                  S )zEConvenience wrapper returning parsed and expanded configuration dict.)r   r   )r   s    r%   Úload_configrF   T   s   € ä˜Ó×$Ñ$Ğ$r/   )r   r2   r?   zDict[str, Any])Ú
+__future__r   Úosr   Úpathlibr   Útypingr   r   r   rF   rD   r/   r%   Ú<module>rK      s&   ğİ "Û 	Û İ ß ÷H-ñ H-ôX%r/   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\__pycache__\ingestion_orchestrator.cpython-312.pyc ==== 
+Ë
+    &úiL  ã                  ó˜   — d dl mZ d dlZd dlZd dlmZ d dlmZmZ d dl	m
+Z
+ d dlmZ d dlmZ d dlmZ d d	lmZ d
+„ Zedk(  r e«        yy)é    )ÚannotationsN)ÚPath)ÚAnyÚDict)ÚConfigLoader)Ú
+ensure_dir)ÚParserFactory)ÚMetadataExtractorFactory)ÚRagTextCleanerc                 ó¾  — t        d«      j                  } | j                  di «      }t        t        |j                  dd«      j                  «       t        j                  «      }t	        j                  |d¬«       t	        j                  d«      }|j                  d«       t        | |¬	«      }t        j                  | «      }t        j                  «       }|j                  d
+g «      }|j                  dd«      }t        | d   d   «      j!                  «       }	t        | d   d   «      j!                  «       }
+t        | d   j                  dd«      «      j!                  «       }t        | d   d   «      j!                  «       }t#        |
+«       t#        |«       t#        |«       t%        |	j'                  d«      «      }|s|j)                  d|	› «       y |j                  dt+        |«      › d|	› «       t-        |t.        «      xr |dkD  xs% t-        |t0        «      xr |j3                  «       dk(  }|rœ	 |j5                  «       }|j                  d«       |j7                  |	|
+«      }|D ]C  }d|v r|j9                  |d   «      |d<   t        |d   d   «      j:                  }|	|› dz  }|j=                  t1        |«      «      }|j?                  «       D ci c]  \  }}|r||v r||“Œ }}}|d   jA                  |«       |
+|› dz  }tC        |dd¬«      5 }tE        jF                  ||d d!¬"«       d d d «       ||› d#z  }tC        |dd¬«      5 }tE        jF                  ||d d!¬"«       d d d «       ||› d$z  }tC        |dd¬«      5 }tE        jF                  |d   |d d!¬"«       d d d «       ŒF |j                  d%t+        |«      › d&«       y |jM                  «       }|D ]¨  }|j                  d(|jN                  › d)«       	 |jQ                  t1        |«      «      }d|v r|j9                  |d   «      |d<   |j                  di «      } |j=                  t1        |«      «      }!|r(|!j?                  «       D ci c]  \  }}||v sŒ||“Œ }!}}| jA                  |!«       | |d<   |
+|j:                  › dz  }tC        |dd¬«      5 }tE        jF                  ||d d!¬"«       d d d «       ||j:                  › d#z  }tC        |dd¬«      5 }tE        jF                  ||d d!¬"«       d d d «       ||j:                  › d$z  }tC        |dd¬«      5 }tE        jF                  | |d d!¬"«       d d d «       |j                  d*|jN                  › «       Œ« |j                  d-«       y c c}}w # 1 sw Y   ŒuxY w# 1 sw Y   ŒJxY w# 1 sw Y   Œ`xY w# tH        $ r}|jK                  d'|› «       Y d }~Œ d }~ww xY wc c}}w # 1 sw Y   ŒxY w# 1 sw Y   ŒéxY w# 1 sw Y   Œ³xY w# tH        $ r,}|jK                  d+|jN                  › d,|› «       Y d }~Œqd }~ww xY w).Nzconfigs/ingestion.yamlÚoptionsÚ	log_levelÚINFOz%(levelname)s | %(message)s)ÚlevelÚformatÚIngestionOrchestratorzStarting ingestion pipeline)ÚloggerÚmetadata_fieldsÚparallelismÚautoÚpathsÚraw_pdfsÚparsedÚcleanedzdata/processed/cleanedÚmetadataz*.pdfzNo PDF files found in zFound z PDF(s) in é   z&Running ingestion in parallel mode ...ÚtextÚsource_filez.pdfz.parsed.jsonÚwzutf-8)ÚencodingFé   )Úensure_asciiÚindentz.cleaned.jsonz.metadata.jsonzParallel ingestion completed (z
+ file(s)).u:   Parallel ingestion failed â†’ falling back to sequential: zParsing z ...u   âœ“ Completed u   âœ— Failed to parse z: zIngestion complete.))r   ÚconfigÚgetÚgetattrÚloggingÚupperr   ÚbasicConfigÚ	getLoggerÚinfor	   r
+   Úfrom_configr   Údefaultr   Úresolver   ÚsortedÚglobÚwarningÚlenÚ
+isinstanceÚintÚstrÚlowerÚcreate_parallel_parserÚ	parse_allÚcleanÚstemÚextract_allÚitemsÚupdateÚopenÚjsonÚdumpÚ	ExceptionÚerrorÚcreate_parserÚnameÚparse)"ÚcfgÚoptsr   r   ÚfactoryÚmetadata_factoryÚcleanerÚactive_metadata_fieldsr   Úraw_dirÚ
+parsed_dirÚcleaned_dirÚmetadata_dirÚ	pdf_filesÚuse_parallelÚparallel_parserÚresultsÚresÚpdf_nameÚpdf_pathÚall_metaÚkÚvÚfiltered_metaÚparsed_pathÚfÚcleaned_pathÚ	meta_pathÚeÚparserÚpdfÚparsed_resultÚbase_metadataÚall_metadatas"                                     úUC:\Users\katha\historical-drift-analyzer\src\core\ingestion\ingestion_orchestrator.pyÚmainrf      s  € ô Ğ/Ó
+0×
+7Ñ
+7€CØŸ7™7 9¨bÓ1€DÜœ §¡¨+°vÓ!>×!DÑ!DÓ!FÌÏÉÓU€Iä×Ñ˜iĞ0MÕNÜ×ÑĞ6Ó7€FØ
+‡KKĞ-Ô.ô
+ ˜C¨Ô/€GÜ/×;Ñ;¸CÓ@ĞÜ×$Ñ$Ó&€Gà!ŸX™XĞ&7¸Ó<ĞØ—(‘(˜=¨&Ó1€Kä3w‘< 
+Ñ+Ó,×4Ñ4Ó6€GÜc˜'‘l 8Ñ,Ó-×5Ñ5Ó7€JÜs˜7‘|×'Ñ'¨	Ğ3KÓLÓM×UÑUÓW€KÜ˜˜G™ ZÑ0Ó1×9Ñ9Ó;€LÜˆzÔÜˆ{ÔÜˆ|Ôäw—|‘| GÓ,Ó-€IÙØ‰Ğ/°¨yĞ9Ô:Øà
+‡KK&œ˜Y›Ğ(¨°G°9Ğ=Ô>ô 	;¤Ó$Ò8¨°q©òJä
+[¤#Ó
+&Ò
+H¨;×+<Ñ+<Ó+>À&Ñ+Hğ ò ğ%	[Ø%×<Ñ<Ó>ˆOØK‰KĞ@ÔAØ%×/Ñ/°¸ÓDˆGäà˜S‘=Ø")§-¡-°°F±Ó"<C˜‘Kô    J¡°Ñ >Ó?×DÑDØ"¨ z°Ğ%6Ñ6Ø+×7Ñ7¼¸H»ÓFà%-§^¡^Ô%5ô!Ù%5™T˜Q Ù1°QĞ:PÑ5Pğ q‘DĞ%5ğ ñ !ğ J‘×&Ñ& }Ô5ğ )¨h¨Z°|Ğ+DÑDÜ˜+ s°WÕ=ÀÜ—I‘I˜c 1°5ÀÕC÷ >ğ  +°¨z¸Ğ-GÑGÜ˜,¨°gÕ>À!Ü—I‘I˜c 1°5ÀÕC÷ ?ğ )¨h¨Z°~Ğ+FÑF	Ü˜) S°7Õ;¸qÜ—I‘I˜c *™o¨q¸uÈQÕO÷ <Ñ;ğ3 ğ8 K‰KĞ8¼¸W»¸ÀjĞQÔRØğ ×"Ñ"Ó$€FÜˆØ‰h˜sŸx™x˜j¨Ğ-Ô.ğ"	Aà"ŸL™L¬¨S«Ó2ˆMğ ˜Ñ&Ø(/¯©°mÀFÑ6KÓ(L˜fÑ%ğ *×-Ñ-¨j¸"Ó=ˆMØ+×7Ñ7¼¸C»ÓAˆLÙ%à%1×%7Ñ%7Ô%9ô Ù%9™T˜Q ¸QĞBXÒ=XAq‘DĞ%9ğ ñ  ğ × Ñ  Ô.Ø(5ˆM˜*Ñ%ğ %¨#¯(©(¨°<Ğ'@Ñ@ˆKÜk 3°Õ9¸QÜ—	‘	˜-¨¸ÀqÕI÷ :ğ '¨C¯H©H¨:°]Ğ)CÑCˆLÜl C°'Õ:¸aÜ—	‘	˜-¨¸ÀqÕI÷ ;ğ %¨#¯(©(¨°>Ğ'BÑBˆIÜi ¨wÕ7¸1Ü—	‘	˜-¨¸ÀqÕI÷ 8ğ K‰K˜.¨¯©¨
+Ğ3Ö4ğC ğR ‡KKĞ%Õ&ùóM!÷ >Ñ=ú÷ ?Ñ>ú÷ <Ñ;ûô ò 	[ØL‰LĞUĞVWĞUXĞY×ZÒZûğ	[üó* ÷ :Ñ9ú÷ ;Ğ:ú÷ 8Ğ7ûô
+ ò 	AØL‰LĞ/°·±¨z¸¸A¸3Ğ?×@Ò@ûğ	Aúsì   È9B$W ËV$Ë0-W ÌV*Ì7W ÍV7Í/W ÎWÎ*)W Ğ
+A6X'Ò W<ÒW<Ò9X'ÓXÓ%(X'ÔXÔ'(X'ÕXÕ)&X'Ö$W Ö*V4	Ö/W Ö7W	Ö<W ×W	×	W ×	W9×W4×4W9×<X'ØX	ØX'ØX	ØX'ØX$	Ø X'Ø'	YØ0!YÙYÚ__main__)Ú
+__future__r   r'   r?   Úpathlibr   Útypingr   r   Ú src.core.ingestion.config_loaderr   Ú#src.core.ingestion.utils.file_utilsr   Ú(src.core.ingestion.parser.parser_factoryr	   Ú6src.core.ingestion.metadata.metadata_extractor_factoryr
+   Ú+src.core.ingestion.cleaner.rag_text_cleanerr   rf   Ú__name__© ó    re   Ú<module>rs      s>   ğİ "Û Û İ ß å 9İ :İ Bİ [İ FòA'ğH ˆzÒÙ…Fğ rr   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\__pycache__\__init__.cpython-312.pyc ==== 
+Ë
+    {-i    ã                    ó   — y )N© r   ó    úGC:\Users\katha\historical-drift-analyzer\src\core\ingestion\__init__.pyÚ<module>r      s   ñr   .

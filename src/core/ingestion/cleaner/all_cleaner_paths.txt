@@ -1,4 +1,0 @@
-C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\all_cleaner_paths.txt
-C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\i_text_cleaner.py
-C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rag_text_cleaner.py
-C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__init__.py
