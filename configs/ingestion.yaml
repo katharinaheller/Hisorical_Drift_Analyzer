@@ -28,7 +28,6 @@ options:
     - title
     - authors
     - year
-    - abstract
     - detected_language
     - file_size
     - toc

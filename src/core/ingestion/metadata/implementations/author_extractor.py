@@ -35,7 +35,7 @@ class LocalNameVerifier:
             "abstract", "introduction", "university", "department", "institute",
             "school", "machine", "learning", "arxiv", "neural", "transformer",
             "appendix", "algorithm", "keywords", "vol", "doi", "intelligence",
-            "markov", "chain", "monte", "carlo", "computing", "zentrum", "sciences",
+            "markov", "chain", "computing", "zentrum", "sciences",
             "centre", "center", "data", "model", "probability", "network"
         }
 
@@ -211,8 +211,7 @@ class AuthorsExtractor:
             "abstract", "introduction", "university", "department", "institute",
             "arxiv", "model", "learning", "probability", "appendix", "keywords",
             "ai", "neural", "transformer", "algorithm", "vol",
-            "intelligence", "markov", "chain", "monte", "carlo",
-            "computing", "zentrum", "sciences", "centre", "center"
+            "intelligence", "computing", "zentrum", "sciences", "centre", "center"
         }
         if any(tok.lower() in bad_keywords for tok in text.split()):
             return False

@@ -1,884 +1,0 @@
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\all_metadata_files.txt ==== 
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\all_metadata_files.txt ==== 
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\metadata_extractor_factory.py ==== 
-from __future__ import annotations
-from typing import Any, Dict, List
-import importlib
-import logging
-from pathlib import Path
-
-
-class MetadataExtractorFactory:
-    """
-    Dynamically loads and executes PDF-based metadata extractors.
-    Each extractor implementation must expose a class named <Name>Extractor in
-    src.core.ingestion.metadata.implementations.<name>_extractor.
-    """
-
-    def __init__(self, active_fields: List[str], pdf_root: str | Path):
-        self.logger = logging.getLogger(__name__)
-        self.active_fields = active_fields
-        self.pdf_root = Path(pdf_root).resolve()
-        self.extractors: Dict[str, Any] = {}
-        self._load_extractors()
-
-    # ------------------------------------------------------------------
-    @classmethod
-    def from_config(cls, cfg: Dict[str, Any]) -> MetadataExtractorFactory:
-        """Initialize factory from ingestion.yaml configuration."""
-        opts = cfg.get("options", {})
-        active = opts.get("metadata_fields", [])
-        pdf_root = cfg.get("paths", {}).get("raw_pdfs", "./data/raw_pdfs")
-        return cls(active_fields=active, pdf_root=pdf_root)
-
-    # ------------------------------------------------------------------
-    def _load_extractors(self) -> None:
-        """Dynamically import extractor implementations for requested fields."""
-        base_pkg = "src.core.ingestion.metadata.implementations"
-
-        mapping = {
-            "title": "title_extractor",
-            "authors": "author_extractor",
-            "year": "year_extractor",
-            "abstract": "abstract_extractor",
-            "detected_language": "language_detector",
-            "file_size": "file_size_extractor",
-            "toc": "toc_extractor",
-        }
-
-        for field in self.active_fields:
-            module_name = mapping.get(field)
-            if not module_name:
-                self.logger.warning(f"No extractor mapping found for field '{field}' â†’ skipped.")
-                continue
-
-            try:
-                module = importlib.import_module(f"{base_pkg}.{module_name}")
-                class_name = "".join([p.capitalize() for p in field.split("_")]) + "Extractor"
-                extractor_class = getattr(module, class_name)
-                self.extractors[field] = extractor_class(base_dir=self.pdf_root)
-                self.logger.debug(f"Loaded extractor: {extractor_class.__name__} for '{field}'")
-            except ModuleNotFoundError:
-                self.logger.warning(f"Implementation missing for '{field}' ({module_name}.py not found).")
-            except Exception as e:
-                self.logger.error(f"Failed to load extractor for '{field}': {e}")
-
-    # ------------------------------------------------------------------
-    def extract_all(self, pdf_path: str) -> Dict[str, Any]:
-        """Run all configured extractors directly on a given PDF file path."""
-        pdf_path = str(Path(pdf_path).resolve())
-        results: Dict[str, Any] = {}
-
-        for field, extractor in self.extractors.items():
-            try:
-                value = extractor.extract(pdf_path)
-                results[field] = value
-            except Exception as e:
-                self.logger.warning(f"Extractor '{field}' failed for {pdf_path}: {e}")
-                results[field] = None
-
-        return results
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__init__.py ==== 
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\abstract_extractor.py ==== 
-from __future__ import annotations
-from typing import Optional
-from pathlib import Path
-from lxml import etree
-import re
-import fitz
-
-
-class AbstractExtractor:
-    """Extracts abstract text directly from GROBID TEI XML or PDF XMP metadata."""
-
-    def __init__(self, base_dir: Path | str | None = None):
-        self.base_dir = Path(base_dir).resolve() if base_dir else None
-
-    # ------------------------------------------------------------------
-    def extract(self, pdf_path: str) -> Optional[str]:
-        pdf_file = Path(pdf_path)
-
-        # 1. Try GROBID XML
-        xml_path = self._find_grobid_xml(pdf_file)
-        if xml_path and xml_path.exists():
-            abstract = self._extract_from_grobid(xml_path)
-            if abstract:
-                return abstract
-
-        # 2. Try PDF metadata (some PDFs include "subject"/"keywords"/"description")
-        abstract = self._extract_from_pdf_metadata(pdf_file)
-        if abstract:
-            return abstract
-
-        # 3. Fallback: None (no text heuristics)
-        return None
-
-    # ------------------------------------------------------------------
-    def _extract_from_pdf_metadata(self, pdf_file: Path) -> Optional[str]:
-        """Read abstract-like information from PDF metadata fields."""
-        try:
-            with fitz.open(pdf_file) as doc:
-                meta = doc.metadata or {}
-                for key in ("subject", "Subject", "description", "Description", "keywords", "Keywords"):
-                    val = meta.get(key)
-                    if isinstance(val, str) and len(val.strip()) > 20:
-                        return re.sub(r"\s+", " ", val.strip())
-        except Exception:
-            return None
-        return None
-
-    # ------------------------------------------------------------------
-    def _find_grobid_xml(self, pdf_file: Path) -> Path | None:
-        xml_candidate = pdf_file.with_suffix(".tei.xml")
-        if xml_candidate.exists():
-            return xml_candidate
-        if self.base_dir:
-            alt = self.base_dir / "grobid_xml" / f"{pdf_file.stem}.tei.xml"
-            if alt.exists():
-                return alt
-        return None
-
-    # ------------------------------------------------------------------
-    def _extract_from_grobid(self, xml_path: Path) -> Optional[str]:
-        """Parse TEI XML to extract the abstract section."""
-        try:
-            with open(xml_path, "r", encoding="utf-8") as f:
-                xml = f.read()
-            root = etree.fromstring(xml.encode("utf-8"))
-            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-            abs_text = root.xpath("string(//tei:abstract)", namespaces=ns)
-            if abs_text and len(abs_text.strip()) > 10:
-                return re.sub(r"\s+", " ", abs_text.strip())
-        except Exception:
-            return None
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\author_extractor.py ==== 
-from __future__ import annotations
-from typing import List
-from pathlib import Path
-import fitz
-import re
-from lxml import etree
-
-
-class AuthorsExtractor:
-    """Extracts author names directly from PDF metadata or GROBID TEI XML."""
-
-    def __init__(self, base_dir: Path | str | None = None):
-        self.base_dir = Path(base_dir).resolve() if base_dir else None
-
-    # ------------------------------------------------------------------
-    def extract(self, pdf_path: str) -> List[str]:
-        pdf_file = Path(pdf_path)
-
-        # 1. Try GROBID XML if available
-        xml_path = self._find_grobid_xml(pdf_file)
-        if xml_path and xml_path.exists():
-            authors = self._extract_from_grobid(xml_path)
-            if authors:
-                return authors
-
-        # 2. Try from PDF metadata
-        authors = self._extract_from_pdf_metadata(pdf_file)
-        if authors:
-            return authors
-
-        return []
-
-    # ------------------------------------------------------------------
-    def _extract_from_pdf_metadata(self, pdf_file: Path) -> List[str]:
-        """Read author field from XMP metadata."""
-        try:
-            with fitz.open(pdf_file) as doc:
-                meta = doc.metadata or {}
-                author_field = meta.get("author") or meta.get("Author") or meta.get("authors")
-                if isinstance(author_field, str) and len(author_field.strip()) > 1:
-                    parts = re.split(r"[;,/&]", author_field)
-                    authors = [p.strip() for p in parts if len(p.strip()) > 1]
-                    return authors
-        except Exception:
-            return []
-        return []
-
-    # ------------------------------------------------------------------
-    def _find_grobid_xml(self, pdf_file: Path) -> Path | None:
-        xml_candidate = pdf_file.with_suffix(".tei.xml")
-        if xml_candidate.exists():
-            return xml_candidate
-        if self.base_dir:
-            alt = self.base_dir / "grobid_xml" / f"{pdf_file.stem}.tei.xml"
-            if alt.exists():
-                return alt
-        return None
-
-    # ------------------------------------------------------------------
-    def _extract_from_grobid(self, xml_path: Path) -> List[str]:
-        """Parse TEI XML to extract author names."""
-        ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-        try:
-            with open(xml_path, "r", encoding="utf-8") as f:
-                xml = f.read()
-            root = etree.fromstring(xml.encode("utf-8"))
-            authors: List[str] = []
-            for node in root.xpath("//tei:author", namespaces=ns):
-                first = node.xpath("string(.//tei:forename)", namespaces=ns).strip()
-                last = node.xpath("string(.//tei:surname)", namespaces=ns).strip()
-                if first or last:
-                    authors.append(" ".join(x for x in [first, last] if x))
-            seen = set()
-            return [a for a in authors if not (a in seen or seen.add(a))]
-        except Exception:
-            return []
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\file_size_extractor.py ==== 
-from __future__ import annotations
-import os
-from pathlib import Path
-
-
-class FileSizeExtractor:
-    """Extracts the exact file size (in bytes) directly from the PDF file."""
-
-    def __init__(self, base_dir: Path | str | None = None):
-        self.base_dir = Path(base_dir).resolve() if base_dir else None
-
-    # ------------------------------------------------------------------
-    def extract(self, pdf_path: str) -> int | None:
-        """Return the file size of the given PDF file in bytes."""
-        pdf_file = Path(pdf_path)
-        try:
-            if not pdf_file.is_file():
-                return None
-            return pdf_file.stat().st_size
-        except Exception:
-            return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\language_detector.py ==== 
-from __future__ import annotations
-from pathlib import Path
-from typing import Optional
-import re
-import fitz
-
-try:
-    from langdetect import detect
-    LANGDETECT_AVAILABLE = True
-except ImportError:
-    LANGDETECT_AVAILABLE = False
-
-
-class DetectedLanguageExtractor:
-    """Detects the dominant document language from PDF text or XMP metadata."""
-
-    def __init__(self, base_dir: Path | str | None = None):
-        self.base_dir = Path(base_dir).resolve() if base_dir else None
-
-    # ------------------------------------------------------------------
-    def extract(self, pdf_path: str) -> Optional[str]:
-        """Identify document language via PDF content or metadata."""
-        pdf_file = Path(pdf_path)
-
-        # 1. Try PDF XMP metadata
-        lang = self._extract_from_metadata(pdf_file)
-        if lang:
-            return lang
-
-        # 2. Try text-based detection (without parser)
-        lang = self._detect_from_text(pdf_file)
-        if lang:
-            return lang
-
-        return None
-
-    # ------------------------------------------------------------------
-    def _extract_from_metadata(self, pdf_file: Path) -> Optional[str]:
-        """Check embedded language fields in PDF metadata."""
-        try:
-            with fitz.open(pdf_file) as doc:
-                meta = doc.metadata or {}
-                for key in ("language", "Language", "lang", "Lang"):
-                    val = meta.get(key)
-                    if val and isinstance(val, str):
-                        val_norm = val.lower().strip()
-                        if val_norm.startswith("en"):
-                            return "en"
-                        if val_norm.startswith("de"):
-                            return "de"
-        except Exception:
-            return None
-        return None
-
-    # ------------------------------------------------------------------
-    def _detect_from_text(self, pdf_file: Path) -> Optional[str]:
-        """Extract small text sample from first pages and apply language detection."""
-        sample_text = ""
-        try:
-            with fitz.open(pdf_file) as doc:
-                max_pages = min(3, len(doc))
-                for i in range(max_pages):
-                    sample_text += doc.load_page(i).get_text("text") + "\n"
-        except Exception:
-            return None
-
-        if not sample_text or len(sample_text.strip()) < 30:
-            return None
-
-        # Use langdetect if installed
-        if LANGDETECT_AVAILABLE:
-            try:
-                lang = detect(sample_text)
-                if lang in ("en", "de"):
-                    return lang
-            except Exception:
-                pass
-
-        # Simple regex-based fallback
-        text_lower = sample_text.lower()
-        if re.search(r"\b(und|nicht|sein|dass|werden|ein|eine|mit|auf|fÃ¼r|dem|den|das|ist|sind|der|die|das)\b", text_lower):
-            return "de"
-        if re.search(r"\b(the|and|of|for|with|from|that|this|by|is|are|we|deep|learning|language|model)\b", text_lower):
-            return "en"
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\title_extractor.py ==== 
-from __future__ import annotations
-from typing import Any
-import fitz
-import re
-from pathlib import Path
-from lxml import etree
-
-
-class TitleExtractor:
-    """Extracts the main document title directly from the PDF or GROBID XML."""
-
-    def __init__(self, base_dir: Path | str | None = None):
-        self.base_dir = Path(base_dir).resolve() if base_dir else None
-
-    # ------------------------------------------------------------------
-    def extract(self, pdf_path: str) -> str | None:
-        pdf_file = Path(pdf_path)
-        title = self._extract_from_pdf_metadata(pdf_file)
-        if title:
-            return title
-
-        # Try GROBID XML if available
-        xml_path = self._find_grobid_xml(pdf_file)
-        if xml_path and xml_path.exists():
-            grobid_title = self._extract_from_grobid(xml_path)
-            if grobid_title:
-                return grobid_title
-
-        # Fallback: filename heuristic
-        return pdf_file.stem.replace("_", " ").strip()
-
-    # ------------------------------------------------------------------
-    def _extract_from_pdf_metadata(self, pdf_file: Path) -> str | None:
-        """Extract title directly from PDF metadata using PyMuPDF."""
-        try:
-            with fitz.open(pdf_file) as doc:
-                meta = doc.metadata or {}
-                title = meta.get("title") or meta.get("Title")
-                if title and len(title.strip()) > 2:
-                    return title.strip()
-        except Exception:
-            return None
-        return None
-
-    # ------------------------------------------------------------------
-    def _find_grobid_xml(self, pdf_file: Path) -> Path | None:
-        """Find associated GROBID XML next to the PDF (same basename)."""
-        xml_candidate = pdf_file.with_suffix(".tei.xml")
-        if xml_candidate.exists():
-            return xml_candidate
-        if self.base_dir:
-            alt = self.base_dir / "grobid_xml" / f"{pdf_file.stem}.tei.xml"
-            if alt.exists():
-                return alt
-        return None
-
-    # ------------------------------------------------------------------
-    def _extract_from_grobid(self, xml_path: Path) -> str | None:
-        """Extract title from GROBID TEI XML."""
-        try:
-            with open(xml_path, "r", encoding="utf-8") as f:
-                xml = f.read()
-            root = etree.fromstring(xml.encode("utf-8"))
-            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-            paths = [
-                "//tei:analytic/tei:title[@type='main']",
-                "//tei:monogr/tei:title[@type='main']",
-                "//tei:titleStmt/tei:title[@type='main']",
-                "//tei:titleStmt/tei:title",
-            ]
-            for p in paths:
-                t = root.xpath(f"string({p})", namespaces=ns)
-                if t and len(t.strip()) > 2:
-                    return re.sub(r"\s+", " ", t.strip())
-        except Exception:
-            return None
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\toc_extractor.py ==== 
-from __future__ import annotations
-from typing import List, Dict, Any
-import fitz
-import re
-from pathlib import Path
-
-
-class TocExtractor:
-    """Extracts table of contents (TOC) entries directly from a PDF using PyMuPDF."""
-
-    def __init__(self, base_dir: Path | str | None = None):
-        self.base_dir = Path(base_dir).resolve() if base_dir else None
-
-    # ------------------------------------------------------------------
-    def extract(self, pdf_path: str) -> List[Dict[str, Any]]:
-        """Return structured TOC entries, purely PDF-based."""
-        pdf_file = Path(pdf_path)
-        toc_entries: List[Dict[str, Any]] = []
-        try:
-            with fitz.open(pdf_file) as doc:
-                toc = doc.get_toc(simple=True)
-                if toc:
-                    for level, title, page in toc:
-                        title_clean = re.sub(r"\s+", " ", title.strip())
-                        if title_clean:
-                            toc_entries.append(
-                                {"level": int(level), "title": title_clean, "page": int(page)}
-                            )
-                    return toc_entries
-
-                # fallback to heuristic textual TOC
-                toc_entries = self._extract_textual_toc(doc)
-                return toc_entries
-
-        except Exception as e:
-            print(f"[WARN] Failed to extract TOC from {pdf_file}: {e}")
-            return []
-
-    # ------------------------------------------------------------------
-    def _extract_textual_toc(self, doc: fitz.Document) -> List[Dict[str, Any]]:
-        """Detect textual TOCs on the first pages when outline metadata is missing."""
-        toc_entries: List[Dict[str, Any]] = []
-        try:
-            max_pages = min(5, len(doc))
-            pattern = re.compile(r"^\s*(\d{0,2}\.?)+\s*[A-ZÃ„Ã–Ãœa-zÃ¤Ã¶Ã¼].{3,}\s+(\d{1,3})\s*$")
-
-            for i in range(max_pages):
-                text = doc.load_page(i).get_text("text")
-                if not re.search(r"(Inhalt|Contents|Table of Contents)", text, re.I):
-                    continue
-                for line in text.splitlines():
-                    if pattern.match(line.strip()):
-                        parts = re.split(r"\s{2,}", line.strip())
-                        if len(parts) >= 2:
-                            title = re.sub(r"^\d+(\.\d+)*\s*", "", parts[0])
-                            page = re.findall(r"\d+", parts[-1])
-                            page_num = int(page[0]) if page else None
-                            toc_entries.append(
-                                {"level": 1, "title": title.strip(), "page": page_num}
-                            )
-            return toc_entries
-
-        except Exception:
-            return []
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\year_extractor.py ==== 
-from __future__ import annotations
-import re
-import datetime
-from typing import Any
-from pathlib import Path
-import fitz
-from lxml import etree
-
-CURRENT_YEAR = datetime.datetime.now().year
-
-
-class YearExtractor:
-    """Extracts publication year strictly from PDF or GROBID XML."""
-
-    def __init__(self, base_dir: Path | str | None = None):
-        self.base_dir = Path(base_dir).resolve() if base_dir else None
-
-    # ------------------------------------------------------------------
-    def extract(self, pdf_path: str) -> str | None:
-        pdf_file = Path(pdf_path)
-
-        # 1. Try GROBID XML
-        xml_path = self._find_grobid_xml(pdf_file)
-        if xml_path and xml_path.exists():
-            year = self._extract_from_grobid(xml_path)
-            if year:
-                return year
-
-        # 2. Try PDF metadata
-        year = self._extract_from_pdf_metadata(pdf_file)
-        if year:
-            return year
-
-        # 3. Try from filename
-        m = re.search(r"(19|20)\d{2}", pdf_file.name)
-        if m:
-            y = int(m.group(0))
-            if 1900 <= y <= CURRENT_YEAR:
-                return str(y)
-
-        return None
-
-    # ------------------------------------------------------------------
-    def _extract_from_pdf_metadata(self, pdf_file: Path) -> str | None:
-        """Extract year directly from PDF XMP metadata."""
-        try:
-            with fitz.open(pdf_file) as doc:
-                meta = doc.metadata or {}
-                for key in ("creationDate", "modDate", "CreationDate", "date"):
-                    val = meta.get(key)
-                    if not val:
-                        continue
-                    m = re.search(r"(19|20)\d{2}", val)
-                    if m:
-                        y = int(m.group(0))
-                        if 1900 <= y <= CURRENT_YEAR:
-                            return str(y)
-        except Exception:
-            return None
-        return None
-
-    # ------------------------------------------------------------------
-    def _find_grobid_xml(self, pdf_file: Path) -> Path | None:
-        """Locate optional GROBID TEI XML next to the PDF or in grobid_xml/."""
-        xml_candidate = pdf_file.with_suffix(".tei.xml")
-        if xml_candidate.exists():
-            return xml_candidate
-        if self.base_dir:
-            alt = self.base_dir / "grobid_xml" / f"{pdf_file.stem}.tei.xml"
-            if alt.exists():
-                return alt
-        return None
-
-    # ------------------------------------------------------------------
-    def _extract_from_grobid(self, xml_path: Path) -> str | None:
-        """Parse GROBID TEI XML for publication date."""
-        try:
-            with open(xml_path, "r", encoding="utf-8") as f:
-                xml = f.read()
-            root = etree.fromstring(xml.encode("utf-8"))
-            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-            years = root.xpath("//tei:sourceDesc//tei:date/@when", namespaces=ns)
-            for y in years:
-                y = y.strip()
-                if len(y) >= 4 and y[:4].isdigit():
-                    year = int(y[:4])
-                    if 1900 <= year <= CURRENT_YEAR:
-                        return str(year)
-        except Exception:
-            return None
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__init__.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\abstract_extractor.cpython-312.pyc ==== 
-Ë
-    ]òi]  ã                  óX   — d dl mZ d dlmZ d dlmZ d dlmZ d dlZd dl	Z	 G d„ d«      Z
-y)é    )Úannotations)ÚOptional)ÚPath)ÚetreeNc                  ó:   — e Zd ZdZdd	d„Zd
-d„Zdd„Zdd„Zdd„Zy)ÚAbstractExtractorzHExtracts abstract text directly from GROBID TEI XML or PDF XMP metadata.Nc                óT   — |rt        |«      j                  «       | _        y d | _        y ©N)r   ÚresolveÚbase_dir)Úselfr   s     újC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\abstract_extractor.pyÚ__init__zAbstractExtractor.__init__   s   € Ù4<œ˜X›×.Ñ.Ó0ˆÀ$ˆó    c                ó´   — t        |«      }| j                  |«      }|r%|j                  «       r| j                  |«      }|r|S | j	                  |«      }|r|S y r
-   )r   Ú_find_grobid_xmlÚexistsÚ_extract_from_grobidÚ_extract_from_pdf_metadata)r   Úpdf_pathÚpdf_fileÚxml_pathÚabstracts        r   ÚextractzAbstractExtractor.extract   s`   € Ü˜“>ˆğ ×(Ñ(¨Ó2ˆÙ˜Ÿ™Ô)Ø×0Ñ0°Ó:ˆHÙØğ ×2Ñ2°8Ó<ˆÙØˆOğ r   c                ó„  — 	 t        j                  |«      5 }|j                  xs i }dD ]p  }|j                  |«      }t	        |t
-        «      sŒ%t        |j                  «       «      dkD  sŒBt        j                  dd|j                  «       «      c cddd«       S  	 ddd«       y# 1 sw Y   yxY w# t        $ r Y yw xY w)z8Read abstract-like information from PDF metadata fields.)ÚsubjectÚSubjectÚdescriptionÚDescriptionÚkeywordsÚKeywordsé   ú\s+Ú N)ÚfitzÚopenÚmetadataÚgetÚ
-isinstanceÚstrÚlenÚstripÚreÚsubÚ	Exception)r   r   ÚdocÚmetaÚkeyÚvals         r   r   z,AbstractExtractor._extract_from_pdf_metadata#   s   € ğ	Ü—‘˜8Ô$¨Ø—|‘|Ò) rÛgCØŸ(™( 3›-CÜ! #¤sÕ+´°C·I±I³KÓ0@À2Ó0EÜ!Ÿv™v f¨c°3·9±9³;Ó?Ñ?÷ %Ñ$ág÷ %ğ ÷ %ğ ûô ò 	Ùğ	úsF   ‚B3 —7B'ÁB'Á,&B'Â	B3 ÂB'ÂB3 Â'B0Â,B3 Â0B3 Â3	B?Â>B?c                óÄ   — |j                  d«      }|j                  «       r|S | j                  r1| j                  dz  |j                  › dz  }|j                  «       r|S y )Nz.tei.xmlÚ
-grobid_xml)Úwith_suffixr   r   Ústem)r   r   Úxml_candidateÚalts       r   r   z"AbstractExtractor._find_grobid_xml1   sZ   € Ø ×,Ñ,¨ZÓ8ˆØ×ÑÔ!Ø Ğ Ø=Š=Ø—-‘- ,Ñ.°H·M±M°?À(Ğ1KÑKˆCØz‰zŒ|Ø
-Ør   c                ó†  — 	 t        |dd¬«      5 }|j                  «       }ddd«       t        j                  j	                  d«      «      }ddi}|j                  d|¬«      }|rAt        |j                  «       «      d	kD  r%t        j                  d
-d|j                  «       «      S y# 1 sw Y   ŒˆxY w# t        $ r Y yw xY w)z.Parse TEI XML to extract the abstract section.Úrzutf-8)ÚencodingNÚteizhttp://www.tei-c.org/ns/1.0zstring(//tei:abstract))Ú
-namespacesé
-   r#   r$   )r&   Úreadr   Ú
-fromstringÚencodeÚxpathr+   r,   r-   r.   r/   )r   r   ÚfÚxmlÚrootÚnsÚabs_texts          r   r   z&AbstractExtractor._extract_from_grobid<   s­   € ğ		Üh ¨gÕ6¸!Ø—f‘f“h÷ 7ä×#Ñ# C§J¡J¨wÓ$7Ó8ˆDØĞ6Ğ7ˆBØ—z‘zĞ":ÀrzÓJˆHÙœC §¡Ó 0Ó1°BÒ6Ü—v‘v˜f c¨8¯>©>Ó+;Ó<Ğ<ğ ÷ 7Ğ6ûô ò 	Ùğ	ús(   ‚B4 B(¡BB4 Â(B1Â-B4 Â4	C Â?C r
-   )r   zPath | str | None)r   r*   ÚreturnúOptional[str])r   r   rI   rJ   )r   r   rI   zPath | None)r   r   rI   rJ   )	Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   r   r   r   r   © r   r   r   r   	   s   „ ÙRôGóó&óôr   r   )Ú
-__future__r   Útypingr   Úpathlibr   Úlxmlr   r-   r%   r   rO   r   r   Ú<module>rT      s!   ğİ "İ İ İ Û 	Û ÷?ò ?r   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\author_extractor.cpython-312.pyc ==== 
-Ë
-    Tòi  ã                  óX   — d dl mZ d dlmZ d dlmZ d dlZd dlZd dlm	Z	  G d„ d«      Z
-y)é    )Úannotations)ÚList)ÚPathN)Úetreec                  ó:   — e Zd ZdZdd	d„Zd
-d„Zdd„Zdd„Zdd„Zy)ÚAuthorsExtractorzCExtracts author names directly from PDF metadata or GROBID TEI XML.Nc                óT   — |rt        |«      j                  «       | _        y d | _        y ©N)r   ÚresolveÚbase_dir)Úselfr   s     úhC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\author_extractor.pyÚ__init__zAuthorsExtractor.__init__   s   € Ù4<œ˜X›×.Ñ.Ó0ˆÀ$ˆó    c                ó¶   — t        |«      }| j                  |«      }|r%|j                  «       r| j                  |«      }|r|S | j	                  |«      }|r|S g S r
-   )r   Ú_find_grobid_xmlÚexistsÚ_extract_from_grobidÚ_extract_from_pdf_metadata)r   Úpdf_pathÚpdf_fileÚxml_pathÚauthorss        r   ÚextractzAuthorsExtractor.extract   s`   € Ü˜“>ˆğ ×(Ñ(¨Ó2ˆÙ˜Ÿ™Ô)Ø×/Ñ/°Ó9ˆGÙØğ ×1Ñ1°(Ó;ˆÙØˆNàˆ	r   c                ó&  — 	 t        j                  |«      5 }|j                  xs i }|j                  d«      xs$ |j                  d«      xs |j                  d«      }t	        |t
-        «      rwt        |j                  «       «      dkD  r[t        j                  d|«      }|D cg c]/  }t        |j                  «       «      dkD  sŒ |j                  «       ‘Œ1 }}|cddd«       S ddd«       g S c c}w # 1 sw Y   g S xY w# t        $ r g cY S w xY w)z$Read author field from XMP metadata.ÚauthorÚAuthorr   é   z[;,/&]N)ÚfitzÚopenÚmetadataÚgetÚ
-isinstanceÚstrÚlenÚstripÚreÚsplitÚ	Exception)r   r   ÚdocÚmetaÚauthor_fieldÚpartsÚpr   s           r   r   z+AuthorsExtractor._extract_from_pdf_metadata"   sæ   € ğ		Ü—‘˜8Ô$¨Ø—|‘|Ò) rØ#Ÿx™x¨Ó1Ò^°T·X±X¸hÓ5GÒ^È4Ï8É8ĞT]ÓK^Ü˜l¬CÔ0´S¸×9KÑ9KÓ9MÓ5NĞQRÒ5RÜŸH™H Y°Ó=EÙ27ÓN±%¨Q¼3¸q¿w¹w»y»>ÈAÓ;M˜qŸw™wy°%GĞNØ"÷ %×$Ñ$ğ ˆ	ùò	 O÷ %ğ ˆ	ûô ò 	ØŠIğ	úsM   ‚D —BC5Â%!C0ÃC0ÃC5Ã	D Ã&D Ã0C5Ã5C?Ã:D Ã?D ÄDÄDc                óÄ   — |j                  d«      }|j                  «       r|S | j                  r1| j                  dz  |j                  › dz  }|j                  «       r|S y )Nz.tei.xmlÚ
-grobid_xml)Úwith_suffixr   r   Ústem)r   r   Úxml_candidateÚalts       r   r   z!AuthorsExtractor._find_grobid_xml1   sZ   € Ø ×,Ñ,¨ZÓ8ˆØ×ÑÔ!Ø Ğ Ø=Š=Ø—-‘- ,Ñ.°H·M±M°?À(Ğ1KÑKˆCØz‰zŒ|Ø
-Ør   c                ó\  — ddi}	 t        |dd¬«      5 }|j                  «       }ddd«       t        j                  j	                  d«      «      }g }|j                  d|¬«      D ]r  }|j                  d	|¬«      j                  «       }|j                  d
-|¬«      j                  «       }	|s|	sŒJ|j                  dj                  d„ ||	fD «       «      «       Œt t        «       }
-|D cg c]  }||
-v rŒ|
-j                  |«      rŒ|‘Œ c}S # 1 sw Y   ŒèxY wc c}w # t        $ r g cY S w xY w)z&Parse TEI XML to extract author names.Úteizhttp://www.tei-c.org/ns/1.0Úrzutf-8)ÚencodingNz//tei:author)Ú
-namespaceszstring(.//tei:forename)zstring(.//tei:surname)Ú c              3  ó&   K  — | ]	  }|sŒ|–— Œ y ­wr
-   © )Ú.0Úxs     r   Ú	<genexpr>z8AuthorsExtractor._extract_from_grobid.<locals>.<genexpr>H   s   è ø€ Ğ+J±}°!Ê¬A±}ùs   ‚Š)r    Úreadr   Ú
-fromstringÚencodeÚxpathr&   ÚappendÚjoinÚsetÚaddr)   )r   r   ÚnsÚfÚxmlÚrootr   ÚnodeÚfirstÚlastÚseenÚas               r   r   z%AuthorsExtractor._extract_from_grobid<   s  € àĞ2Ğ3ˆğ	Üh ¨gÕ6¸!Ø—f‘f“h÷ 7ä×#Ñ# C§J¡J¨wÓ$7Ó8ˆDØ!#ˆGØŸ
-™
- >¸b˜
-ÖAØŸ
-™
-Ğ#<È˜
-ÓL×RÑRÓTØ—z‘zĞ":ÀrzÓJ×PÑPÓRÙšDØ—N‘N 3§8¡8Ñ+J¸¸t±}Ó+JÓ#JÕKğ	 Bô
- “5ˆDÙ&ÓI™w˜!¨q°Dªy¸D¿H¹HÀQ½K’A˜wÑIĞI÷ 7Ğ6üò JøÜò 	ØŠIğ	úsF   †D ”D¥B
-D Â09D Ã)	DÃ3DÄDÄ	D ÄDÄD ÄD+Ä*D+r
-   )r   zPath | str | None)r   r$   Úreturnú	List[str])r   r   rQ   rR   )r   r   rQ   zPath | None)r   r   rQ   rR   )	Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   r   r   r   r   r<   r   r   r   r   	   s   „ ÙMôGóó$óôr   r   )Ú
-__future__r   Útypingr   Úpathlibr   r   r'   Úlxmlr   r   r<   r   r   Ú<module>r[      s#   ğİ "İ İ Û Û 	İ ÷Cò Cr   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\file_size_extractor.cpython-312.pyc ==== 
-Ë
-    vòiØ  ã                  ó8   — d dl mZ d dlZd dlmZ  G d„ d«      Zy)é    )ÚannotationsN)ÚPathc                  ó"   — e Zd ZdZddd„Zdd„Zy)ÚFileSizeExtractorzCExtracts the exact file size (in bytes) directly from the PDF file.Nc                óT   — |rt        |«      j                  «       | _        y d | _        y ©N)r   ÚresolveÚbase_dir)Úselfr
-   s     úkC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\file_size_extractor.pyÚ__init__zFileSizeExtractor.__init__	   s   € Ù4<œ˜X›×.Ñ.Ó0ˆÀ$ˆó    c                ó   — t        |«      }	 |j                  «       sy|j                  «       j                  S # t        $ r Y yw xY w)z4Return the file size of the given PDF file in bytes.N)r   Úis_fileÚstatÚst_sizeÚ	Exception)r   Úpdf_pathÚpdf_files      r   ÚextractzFileSizeExtractor.extract   sC   € ä˜“>ˆğ	Ø×#Ñ#Ô%ØØ—=‘=“?×*Ñ*Ğ*øÜò 	Ùğ	ús   8 8 ¸	AÁAr   )r
-   zPath | str | None)r   ÚstrÚreturnz
-int | None)Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   r   © r   r   r   r      s   „ ÙMôGôr   r   )Ú
-__future__r   ÚosÚpathlibr   r   r   r   r   Ú<module>r!      s   ğİ "Û 	İ ÷ò r   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\language_detector.cpython-312.pyc ==== 
-Ë
-    ~òiB  ã                  óx   — d dl mZ d dlmZ d dlmZ d dlZd dlZ	 d dlm	Z	 dZ
- G d„ d	«      Zy# e$ r dZ
-Y Œw xY w)
-é    )Úannotations)ÚPath)ÚOptionalN)ÚdetectTFc                  ó2   — e Zd ZdZddd„Zd	d„Zd
-d„Zd
-d„Zy)ÚDetectedLanguageExtractorzEDetects the dominant document language from PDF text or XMP metadata.Nc                óT   — |rt        |«      j                  «       | _        y d | _        y ©N)r   ÚresolveÚbase_dir)Úselfr   s     úiC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\language_detector.pyÚ__init__z"DetectedLanguageExtractor.__init__   s   € Ù4<œ˜X›×.Ñ.Ó0ˆÀ$ˆó    c                ón   — t        |«      }| j                  |«      }|r|S | j                  |«      }|r|S y)z7Identify document language via PDF content or metadata.N)r   Ú_extract_from_metadataÚ_detect_from_text)r   Úpdf_pathÚpdf_fileÚlangs       r   Úextractz!DetectedLanguageExtractor.extract   sB   € ä˜“>ˆğ ×*Ñ*¨8Ó4ˆÙØˆKğ ×%Ñ% hÓ/ˆÙØˆKàr   c                óš  — 	 t        j                  |«      5 }|j                  xs i }dD ]{  }|j                  |«      }|sŒt	        |t
-        «      sŒ(|j                  «       j                  «       }|j                  d«      r
- ddd«       y|j                  d«      sŒs ddd«       y 	 ddd«       y# 1 sw Y   yxY w# t        $ r Y yw xY w)z/Check embedded language fields in PDF metadata.)ÚlanguageÚLanguager   ÚLangÚenNÚde)
-ÚfitzÚopenÚmetadataÚgetÚ
-isinstanceÚstrÚlowerÚstripÚ
-startswithÚ	Exception)r   r   ÚdocÚmetaÚkeyÚvalÚval_norms          r   r   z0DetectedLanguageExtractor._extract_from_metadata&   s´   € ğ	Ü—‘˜8Ô$¨Ø—|‘|Ò) rÛCCØŸ(™( 3›-CÚœz¨#¬sÕ3Ø#&§9¡9£;×#4Ñ#4Ó#6˜Ø#×.Ñ.¨tÔ4Ø#'÷ %Ğ$ğ $×.Ñ.¨tÕ4Ø#'÷ %Ğ$áC÷ %ğ ÷ %ğ ûô ò 	Ùğ	úsX   ‚B> —)B2ÁB2Á0B2ÂB> ÂB2ÂB2ÂB> Â'B2Â)B> Â2B;Â7B> Â;B> Â>	C
-Ã	C
-c                ó  — d}	 t        j                  |«      5 }t        dt        |«      «      }t	        |«      D ](  }||j                  |«      j                  d«      dz   z  }Œ* 	 ddd«       |rt        |j                  «       «      dk  ryt        r	 t        |«      }|dv r|S 	 |j                  «       }t        j                  d|«      ry	t        j                  d
-|«      ryy# 1 sw Y   Œ€xY w# t        $ r Y yw xY w# t        $ r Y Œew xY w)zHExtract small text sample from first pages and apply language detection.Ú é   ÚtextÚ
-Né   )r   r   uW   \b(und|nicht|sein|dass|werden|ein|eine|mit|auf|fÃ¼r|dem|den|das|ist|sind|der|die|das)\br   zR\b(the|and|of|for|with|from|that|this|by|is|are|we|deep|learning|language|model)\br   )r   r   ÚminÚlenÚrangeÚ	load_pageÚget_textr'   r%   ÚLANGDETECT_AVAILABLEr   r$   ÚreÚsearch)r   r   Úsample_textr(   Ú	max_pagesÚir   Ú
-text_lowers           r   r   z+DetectedLanguageExtractor._detect_from_text8   s  € àˆğ	Ü—‘˜8Ô$¨Ü ¤3 s£8Ó,	Ü˜yÖ)AØ 3§=¡=°Ó#3×#<Ñ#<¸VÓ#DÀtÑ#KÑK‘Kñ *÷ %ñ œc +×"3Ñ"3Ó"5Ó6¸Ò;Øõ  ğÜ˜kÓ*Ø˜<Ñ'ØKğ (ğ !×&Ñ&Ó(ˆ
-Ü9‰9ĞoĞq{Ô|ØÜ9‰9ĞjĞlvÔwØØ÷3 %Ğ$ûô ò 	Ùğ	ûô ò Ùğús;   „C1 ™AC%Á&C1 ÂD  Ã%C.Ã*C1 Ã1	C=Ã<C=Ä 	DÄDr
-   )r   zPath | str | None)r   r#   ÚreturnúOptional[str])r   r   r?   r@   )Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   r   r   r   © r   r   r   r      s   „ ÙOôGóó"ô$r   r   )Ú
-__future__r   Úpathlibr   Útypingr   r9   r   Ú
-langdetectr   r8   ÚImportErrorr   rE   r   r   Ú<module>rK      sE   ğİ "İ İ Û 	Û ğ!İ!ØĞ÷
-Gò Gøğ	 ò !Ø Òğ!ús   œ/ ¯9¸9.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\title_extractor.cpython-312.pyc ==== 
-Ë
-    òiß  ã                  óX   — d dl mZ d dlmZ d dlZd dlZd dlmZ d dlm	Z	  G d„ d«      Z
-y)é    )Úannotations)ÚAnyN)ÚPath)Úetreec                  ó:   — e Zd ZdZdd	d„Zd
-d„Zdd„Zdd„Zdd„Zy)ÚTitleExtractorzEExtracts the main document title directly from the PDF or GROBID XML.Nc                óT   — |rt        |«      j                  «       | _        y d | _        y ©N)r   ÚresolveÚbase_dir)Úselfr   s     úgC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\title_extractor.pyÚ__init__zTitleExtractor.__init__   s   € Ù4<œ˜X›×.Ñ.Ó0ˆÀ$ˆó    c                ó  — t        |«      }| j                  |«      }|r|S | j                  |«      }|r%|j                  «       r| j	                  |«      }|r|S |j
-                  j                  dd«      j                  «       S )NÚ_Ú )r   Ú_extract_from_pdf_metadataÚ_find_grobid_xmlÚexistsÚ_extract_from_grobidÚstemÚreplaceÚstrip)r   Úpdf_pathÚpdf_fileÚtitleÚxml_pathÚgrobid_titles         r   ÚextractzTitleExtractor.extract   s|   € Ü˜“>ˆØ×/Ñ/°Ó9ˆÙØˆLğ ×(Ñ(¨Ó2ˆÙ˜Ÿ™Ô)Ø×4Ñ4°XÓ>ˆLÙØ#Ğ#ğ }‰}×$Ñ$ S¨#Ó.×4Ñ4Ó6Ğ6r   c                óN  — 	 t        j                  |«      5 }|j                  xs i }|j                  d«      xs |j                  d«      }|r5t	        |j                  «       «      dkD  r|j                  «       cddd«       S ddd«       y# 1 sw Y   yxY w# t        $ r Y yw xY w)z7Extract title directly from PDF metadata using PyMuPDF.r   ÚTitleé   N)ÚfitzÚopenÚmetadataÚgetÚlenr   Ú	Exception)r   r   ÚdocÚmetar   s        r   r   z)TitleExtractor._extract_from_pdf_metadata!   s‹   € ğ	Ü—‘˜8Ô$¨Ø—|‘|Ò) rØŸ™ Ó)Ò>¨T¯X©X°gÓ->ÙœS §¡£Ó/°!Ò3Ø Ÿ;™;›=÷	 %×$Ñ$ğ ÷ %ğ ûô ò 	Ùğ	ús5   ‚B —A"BÁ9	B ÂB ÂBÂB ÂB Â	B$Â#B$c                óÄ   — |j                  d«      }|j                  «       r|S | j                  r1| j                  dz  |j                  › dz  }|j                  «       r|S y)z;Find associated GROBID XML next to the PDF (same basename).z.tei.xmlÚ
-grobid_xmlN)Úwith_suffixr   r   r   )r   r   Úxml_candidateÚalts       r   r   zTitleExtractor._find_grobid_xml.   sZ   € à ×,Ñ,¨ZÓ8ˆØ×ÑÔ!Ø Ğ Ø=Š=Ø—-‘- ,Ñ.°H·M±M°?À(Ğ1KÑKˆCØz‰zŒ|Ø
-Ør   c                ó¬  — 	 t        |dd¬«      5 }|j                  «       }ddd«       t        j                  j	                  d«      «      }ddi}g d¢}|D ]_  }|j                  d|› d	|¬
-«      }|sŒt        |j                  «       «      dkD  sŒ:t        j                  dd|j                  «       «      c S  	 y# 1 sw Y   Œ›xY w# t        $ r Y yw xY w)z"Extract title from GROBID TEI XML.Úrzutf-8)ÚencodingNÚteizhttp://www.tei-c.org/ns/1.0)z&//tei:analytic/tei:title[@type='main']z$//tei:monogr/tei:title[@type='main']z'//tei:titleStmt/tei:title[@type='main']z//tei:titleStmt/tei:titlezstring(Ú))Ú
-namespacesr#   z\s+r   )r%   Úreadr   Ú
-fromstringÚencodeÚxpathr(   r   ÚreÚsubr)   )	r   r   ÚfÚxmlÚrootÚnsÚpathsÚpÚts	            r   r   z#TitleExtractor._extract_from_grobid:   sÄ   € ğ	Üh ¨gÕ6¸!Ø—f‘f“h÷ 7ä×#Ñ# C§J¡J¨wÓ$7Ó8ˆDØĞ6Ğ7ˆBòˆEó Ø—J‘J ¨¨¨1˜~¸"JÓ=Úœ˜QŸW™W›Y›¨!Ó+ÜŸ6™6 &¨#¨q¯w©w«yÓ9Ò9ñ ğ ÷! 7Ğ6ûô ò 	Ùğ	ús:   ‚C B;¡AC Á4C Â&C Â8C Â;CÃ C Ã	CÃCr
-   )r   zPath | str | None)r   ÚstrÚreturnú
-str | None)r   r   rE   rF   )r   r   rE   zPath | None)r   r   rE   rF   )	Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   r    r   r   r   © r   r   r   r   	   s   „ ÙOôGó7ó"
-ó	ôr   r   )Ú
-__future__r   Útypingr   r$   r;   Úpathlibr   Úlxmlr   r   rK   r   r   Ú<module>rP      s#   ğİ "İ Û Û 	İ İ ÷Dò Dr   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\toc_extractor.cpython-312.pyc ==== 
-Ë
-    Jòiğ
-  ã                  óT   — d dl mZ d dlmZmZmZ d dlZd dlZd dlm	Z	  G d„ d«      Z
-y)é    )Úannotations)ÚListÚDictÚAnyN)ÚPathc                  ó*   — e Zd ZdZddd„Zdd„Zd	d„Zy)
-ÚTocExtractorzKExtracts table of contents (TOC) entries directly from a PDF using PyMuPDF.Nc                óT   — |rt        |«      j                  «       | _        y d | _        y ©N)r   ÚresolveÚbase_dir)Úselfr   s     úeC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\toc_extractor.pyÚ__init__zTocExtractor.__init__   s   € Ù4<œ˜X›×.Ñ.Ó0ˆÀ$ˆó    c           	     óŞ  — t        |«      }g }	 t        j                  |«      5 }|j                  d¬«      }|re|D ]U  \  }}}t	        j
-                  dd|j                  «       «      }	|	sŒ/|j                  t        |«      |	t        |«      dœ«       ŒW |cddd«       S | j                  |«      }|cddd«       S # 1 sw Y   yxY w# t        $ r}
-t        d|› d|
-› «       g cY d}
-~
-S d}
-~
-ww xY w)	z0Return structured TOC entries, purely PDF-based.T)Úsimplez\s+Ú ©ÚlevelÚtitleÚpageNz"[WARN] Failed to extract TOC from z: )r   ÚfitzÚopenÚget_tocÚreÚsubÚstripÚappendÚintÚ_extract_textual_tocÚ	ExceptionÚprint)r   Úpdf_pathÚpdf_fileÚtoc_entriesÚdocÚtocr   r   r   Útitle_cleanÚes              r   ÚextractzTocExtractor.extract   sß   € ä˜“>ˆØ,.ˆğ	Ü—‘˜8Ô$¨Ø—k‘k¨kÓ.ÙÛ.1Ñ*˜˜u dÜ&(§f¡f¨V°S¸%¿+¹+»-Ó&H˜Ú&Ø'×.Ñ.Ü*-¨e«*¸{ÔTWĞX\ÓT]Ñ ^õğ /2ğ '÷ %Ñ$ğ #×7Ñ7¸Ó<Ø"÷ %×$Ò$ûô ò 	ÜĞ6°x°jÀÀ1À#ĞFÔGØIûğ	úsM   C ¤AB:Á**B:Â	C ÂB:Â0	C Â:CÂ?C ÃC Ã	C,ÃC'Ã!C,Ã'C,c                óÒ  — g }	 t        dt        |«      «      }t        j                  d«      }t	        |«      D ]  }|j                  |«      j                  d«      }t        j                  d|t        j                  «      sŒJ|j                  «       D ]½  }|j                  |j                  «       «      sŒ#t        j                  d|j                  «       «      }t        |«      dk\  sŒVt        j                  dd|d	   «      }	t        j                  d
-|d   «      }
-|
-rt        |
-d	   «      nd}|j!                  d|	j                  «       |dœ«       Œ¿ Œ |S # t"        $ r g cY S w xY w)zHDetect textual TOCs on the first pages when outline metadata is missing.é   u=   ^\s*(\d{0,2}\.?)+\s*[A-ZÃ„Ã–Ãœa-zÃ¤Ã¶Ã¼].{3,}\s+(\d{1,3})\s*$Útextz#(Inhalt|Contents|Table of Contents)z\s{2,}é   z^\d+(\.\d+)*\s*Ú r   z\d+éÿÿÿÿNé   r   )ÚminÚlenr   ÚcompileÚrangeÚ	load_pageÚget_textÚsearchÚIÚ
-splitlinesÚmatchr   Úsplitr   Úfindallr    r   r"   )r   r'   r&   Ú	max_pagesÚpatternÚir.   ÚlineÚpartsr   r   Úpage_nums               r   r!   z!TocExtractor._extract_textual_toc(   s%  € à,.ˆğ	Ü˜Aœs 3›xÓ(ˆIÜ—j‘jĞ!aÓbˆGä˜9×%Ø—}‘} QÓ'×0Ñ0°Ó8Ü—y‘yĞ!GÈÌrÏtÉtÔTØØ ŸO™OÖ-DØ—}‘} T§Z¡Z£\Õ2Ü "§¡¨°D·J±J³LÓ A˜Ü˜u›:¨›?Ü$&§F¡FĞ+=¸rÀ5ÈÁ8Ó$L˜EÜ#%§:¡:¨f°e¸B±iÓ#@˜DÙ7;¤s¨4°©7¤|À˜HØ'×.Ñ.Ø*+°e·k±k³mÈXÑ Võò .ğ	 &ğ Ğøäò 	ØŠIğ	ús   „B1E Â62E Ã)A.E ÅE&Å%E&r   )r   zPath | str | None)r$   ÚstrÚreturnúList[Dict[str, Any]])r'   zfitz.DocumentrF   rG   )Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   r+   r!   © r   r   r	   r	      s   „ ÙUôGóô2r   r	   )Ú
-__future__r   Útypingr   r   r   r   r   Úpathlibr   r	   rL   r   r   Ú<module>rP      s!   ğİ "ß "Ñ "Û Û 	İ ÷8ò 8r   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\year_extractor.cpython-312.pyc ==== 
-Ë
-    òi  ã                  ó¨   — d dl mZ d dlZd dlZd dlmZ d dlmZ d dlZd dl	m
-Z
- ej                  j                  «       j                  Z G d„ d«      Zy)é    )ÚannotationsN)ÚAny)ÚPath)Úetreec                  ó:   — e Zd ZdZdd	d„Zd
-d„Zdd„Zdd„Zdd„Zy)ÚYearExtractorz:Extracts publication year strictly from PDF or GROBID XML.Nc                óT   — |rt        |«      j                  «       | _        y d | _        y ©N)r   ÚresolveÚbase_dir)Úselfr   s     úfC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\year_extractor.pyÚ__init__zYearExtractor.__init__   s   € Ù4<œ˜X›×.Ñ.Ó0ˆÀ$ˆó    c                ód  — t        |«      }| j                  |«      }|r%|j                  «       r| j                  |«      }|r|S | j	                  |«      }|r|S t        j                  d|j                  «      }|r6t        |j                  d«      «      }d|cxk  rt        k  rt        |«      S  y y )Nú(19|20)\d{2}r   él  )r   Ú_find_grobid_xmlÚexistsÚ_extract_from_grobidÚ_extract_from_pdf_metadataÚreÚsearchÚnameÚintÚgroupÚCURRENT_YEARÚstr)r   Úpdf_pathÚpdf_fileÚxml_pathÚyearÚmÚys          r   ÚextractzYearExtractor.extract   s¥   € Ü˜“>ˆğ ×(Ñ(¨Ó2ˆÙ˜Ÿ™Ô)Ø×,Ñ,¨XÓ6ˆDÙØğ ×.Ñ.¨xÓ8ˆÙØˆKô I‰Io x§}¡}Ó5ˆÙÜA—G‘G˜A“J“ˆAØqÔ(œLÒ(Ü˜1“vğ )ñ r   c                ó†  — 	 t        j                  |«      5 }|j                  xs i }dD ]q  }|j                  |«      }|sŒt	        j
-                  d|«      }|sŒ0t        |j                  d«      «      }d|cxk  r
-t        k  sŒZn Œ]t        |«      c cddd«       S  	 ddd«       y# 1 sw Y   yxY w# t        $ r Y yw xY w)z,Extract year directly from PDF XMP metadata.)ÚcreationDateÚmodDateÚCreationDateÚdater   r   r   N)ÚfitzÚopenÚmetadataÚgetr   r   r   r   r   r   Ú	Exception)r   r    ÚdocÚmetaÚkeyÚvalr#   r$   s           r   r   z(YearExtractor._extract_from_pdf_metadata,   s¨   € ğ	Ü—‘˜8Ô$¨Ø—|‘|Ò) rÛNCØŸ(™( 3›-CÙØ ÜŸ	™	 /°3Ó7AÚÜ §¡¨£
-›O˜Ø 1Ô4¬Ö4Ü#& q£6™M÷ %Ñ$áN÷ %ğ ÷ %ğ ûô ò 	Ùğ	úsG   ‚B4 —AB(Á)B(ÂB(Â	B4 ÂB(ÂB4 Â(B1Â-B4 Â1B4 Â4	C Â?C c                óÄ   — |j                  d«      }|j                  «       r|S | j                  r1| j                  dz  |j                  › dz  }|j                  «       r|S y)zALocate optional GROBID TEI XML next to the PDF or in grobid_xml/.z.tei.xmlÚ
-grobid_xmlN)Úwith_suffixr   r   Ústem)r   r    Úxml_candidateÚalts       r   r   zYearExtractor._find_grobid_xml?   sZ   € à ×,Ñ,¨ZÓ8ˆØ×ÑÔ!Ø Ğ Ø=Š=Ø—-‘- ,Ñ.°H·M±M°?À(Ğ1KÑKˆCØz‰zŒ|Ø
-Ør   c                óĞ  — 	 t        |dd¬«      5 }|j                  «       }ddd«       t        j                  j	                  d«      «      }ddi}|j                  d|¬«      }|D ]b  }|j                  «       }t        |«      d	k\  sŒ"|dd	 j                  «       sŒ6t        |dd	 «      }d
-|cxk  r
-t        k  sŒTn ŒWt        |«      c S  	 y# 1 sw Y   Œ­xY w# t        $ r Y yw xY w)z*Parse GROBID TEI XML for publication date.Úrzutf-8)ÚencodingNÚteizhttp://www.tei-c.org/ns/1.0z //tei:sourceDesc//tei:date/@when)Ú
-namespacesé   r   )r,   Úreadr   Ú
-fromstringÚencodeÚxpathÚstripÚlenÚisdigitr   r   r   r/   )	r   r!   ÚfÚxmlÚrootÚnsÚyearsr$   r"   s	            r   r   z"YearExtractor._extract_from_grobidK   sÑ   € ğ	Üh ¨gÕ6¸!Ø—f‘f“h÷ 7ä×#Ñ# C§J¡J¨wÓ$7Ó8ˆDØĞ6Ğ7ˆBØ—J‘JĞAÈbJÓQˆEÛØ—G‘G“IÜq“6˜Q“; 1 R a 5§=¡=¥?Ü˜q  !˜u›:DØ˜tÔ3¤|Ö3Ü" 4›yÒ(ñ ğ ÷ 7Ğ6ûô ò 	Ùğ	ús@   ‚C C¡A&C ÂC ÂC Â:C Ã
-C ÃCÃC Ã	C%Ã$C%r
-   )r   zPath | str | None)r   r   Úreturnú
-str | None)r    r   rL   rM   )r    r   rL   zPath | None)r!   r   rL   rM   )	Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   r%   r   r   r   © r   r   r   r      s   „ ÙDôGóó2ó&	ôr   r   )Ú
-__future__r   r   ÚdatetimeÚtypingr   Úpathlibr   r+   Úlxmlr   Únowr"   r   r   rR   r   r   Ú<module>rY      s@   ğİ "Û 	Û İ İ Û İ à× Ñ ×$Ñ$Ó&×+Ñ+€÷Oò Or   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\__init__.cpython-312.pyc ==== 
-Ë
-    İi    ã                    ó   — y )N© r   ó    ú`C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__init__.pyÚ<module>r      s   ñr   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_abstract_extractor.py ==== 
-from __future__ import annotations
-from typing import Any, Dict
-from lxml import etree
-import re
-from src.core.ingestion.metadata.interfaces.i_abstract_extractor import IAbstractExtractor
-
-class AbstractExtractor(IAbstractExtractor):
-    """Extracts abstract section using GROBID TEI XML."""
-
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        xml_data = parsed_document.get("grobid_xml")
-        if not xml_data or not xml_data.strip().startswith("<"):
-            return None
-
-        try:
-            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-            root = etree.fromstring(xml_data.encode("utf8"))
-            # collect all text under <abstract> or <div type='abstract'>
-            xpath_candidates = [
-                "//tei:abstract",
-                "//tei:div[@type='abstract']",
-                "//tei:profileDesc/tei:abstract",
-            ]
-            for path in xpath_candidates:
-                text = root.xpath(f"string({path})", namespaces=ns)
-                if text and len(text.strip()) > 20:
-                    cleaned = re.sub(r"\s+", " ", text.strip())
-                    return cleaned
-        except Exception:
-            return None
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_author_extractor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List
-
-class IAuthorExtractor(ABC):
-    """Interface for extracting document authors."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> List[str]:
-        """Extract author names as a list of strings."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_file_size_extractor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict
-
-class IFileSizeExtractor(ABC):
-    """Interface for extracting the file size of a PDF."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str) -> int | None:
-        """Return file size in bytes."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_language_detector.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict
-
-class ILanguageDetector(ABC):
-    """Interface for detecting the main document language."""
-
-    @abstractmethod
-    def detect(self, text: str, metadata: Dict[str, Any] | None = None) -> str | None:
-        """Detect the dominant language code (e.g. 'en', 'de')."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_title_extractor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict
-
-class ITitleExtractor(ABC):
-    """Interface for extracting the main document title."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        """Extract the document title."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_year_extractor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict
-
-class IYearExtractor(ABC):
-    """Interface for extracting publication year."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        """Extract the publication year as string (e.g. '2023')."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\toc_extractor_interface.py ==== 
-from __future__ import annotations
-from typing import Any, Dict, List
-from abc import ABC, abstractmethod
-
-
-class TocExtractorInterface(ABC):
-    """Interface for table-of-contents extractors."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
-        """
-        Extracts the table of contents (TOC) from a given PDF file.
-
-        Returns:
-            A list of dictionaries with keys:
-                - level: int
-                - title: str
-                - page: int
-        """
-        pass
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\__init__.py ==== 
-# Expose all interfaces for clean import
-from .i_title_extractor import ITitleExtractor
-from .i_author_extractor import IAuthorExtractor
-from .i_year_extractor import IYearExtractor
-from .i_abstract_extractor import IAbstractExtractor
-from .i_language_detector import ILanguageDetector
-from .i_file_size_extractor import IFileSizeExtractor
-from .i_has_ocr_extractor import IHasOcrExtractor
-
-__all__ = [
-    "ITitleExtractor",
-    "IAuthorExtractor",
-    "IYearExtractor",
-    "IAbstractExtractor",
-    "ILanguageDetector",
-    "IFileSizeExtractor",
-    "IHasOcrExtractor",
-]
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__pycache__\metadata_extractor_factory.cpython-312.pyc ==== 
-Ë
-    ÍòiE  ã                  óT   — d dl mZ d dlmZmZmZ d dlZd dlZd dlm	Z	  G d„ d«      Z
-y)é    )Úannotations)ÚAnyÚDictÚListN)ÚPathc                  ó:   — e Zd ZdZdd„Zedd„«       Zd	d„Zd
-d„Zy)ÚMetadataExtractorFactoryzØ
-    Dynamically loads and executes PDF-based metadata extractors.
-    Each extractor implementation must expose a class named <Name>Extractor in
-    src.core.ingestion.metadata.implementations.<name>_extractor.
-    c                ó¸   — t        j                  t        «      | _        || _        t        |«      j                  «       | _        i | _        | j                  «        y )N)
-ÚloggingÚ	getLoggerÚ__name__ÚloggerÚactive_fieldsr   ÚresolveÚpdf_rootÚ
-extractorsÚ_load_extractors)Úselfr   r   s      úbC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\metadata_extractor_factory.pyÚ__init__z!MetadataExtractorFactory.__init__   sC   € Ü×'Ñ'¬Ó1ˆŒØ*ˆÔÜ˜X›×.Ñ.Ó0ˆŒØ*,ˆŒØ×ÑÕó    c                ó¢   — |j                  di «      }|j                  dg «      }|j                  di «      j                  dd«      } | ||¬«      S )z5Initialize factory from ingestion.yaml configuration.ÚoptionsÚmetadata_fieldsÚpathsÚraw_pdfsz./data/raw_pdfs)r   r   )Úget)ÚclsÚcfgÚoptsÚactiver   s        r   Úfrom_configz$MetadataExtractorFactory.from_config   sP   € ğ w‰wy "Ó%ˆØ—‘Ğ+¨RÓ0ˆØ—7‘7˜7 BÓ'×+Ñ+¨JĞ8IÓJˆÙ °(Ô;Ğ;r   c           	     óÜ  — d}dddddddd	œ}| j                   D ]ç  }|j                  |«      }|s | j                  j                  d
-|› d«       Œ6	 t	        j
-                  |› d|› «      }dj                  |j                  d«      D cg c]  }|j                  «       ‘Œ c}«      dz   }t        ||«      } || j                  ¬«      | j                  |<   | j                  j                  d|j                  › d|› d«       Œé yc c}w # t        $ r& | j                  j                  d|› d|› d«       Y Œt        $ r,}	| j                  j!                  d|› d|	› «       Y d}	~	ŒMd}	~	ww xY w)zBDynamically import extractor implementations for requested fields.z+src.core.ingestion.metadata.implementationsÚtitle_extractorÚauthor_extractorÚyear_extractorÚabstract_extractorÚlanguage_detectorÚfile_size_extractorÚtoc_extractor)ÚtitleÚauthorsÚyearÚabstractÚdetected_languageÚ	file_sizeÚtocz&No extractor mapping found for field 'u   ' â†’ skipped.Ú.Ú Ú_Ú	Extractor)Úbase_dirzLoaded extractor: z for 'Ú'zImplementation missing for 'z' (z.py not found).zFailed to load extractor for 'z': N)r   r   r   ÚwarningÚ	importlibÚimport_moduleÚjoinÚsplitÚ
-capitalizeÚgetattrr   r   Údebugr   ÚModuleNotFoundErrorÚ	ExceptionÚerror)
-r   Úbase_pkgÚmappingÚfieldÚmodule_nameÚmoduleÚpÚ
-class_nameÚextractor_classÚes
-             r   r   z)MetadataExtractorFactory._load_extractors    sv  € à@ˆğ 'Ø)Ø$Ø,Ø!4Ø.Ø"ñ
-ˆğ ×'Ô'ˆEØ!Ÿ+™+ eÓ,ˆKÙØ—‘×#Ñ#Ğ&LÈUÈGĞSaĞ$bÔcØğ	RÜ"×0Ñ0°H°:¸Q¸{¸mĞ1LÓMØŸW™W¸e¿k¹kÈ#Ô>NÓ%OÑ>N¸ a§l¡l¥nĞ>NÑ%OÓPĞS^Ñ^
-Ü")¨&°*Ó"=Ù)8À$Ç-Á-Ô)P—‘ Ñ&Ø—‘×!Ñ!Ğ$6°×7OÑ7OĞ6PĞPVĞW\ĞV]Ğ]^Ğ"_Õ`ñ (ùò &Pøô 'ò kØ—‘×#Ñ#Ğ&BÀ5À'ÈÈ[ÈMĞYhĞ$i×jÜò RØ—‘×!Ñ!Ğ$BÀ5À'ÈÈQÈCĞ"P×QÒQûğRús1   Á8D	ÂD
-ÂA"D	ÄD	Ä	+E+Ä7E+Ä?!E&Å&E+c           
-     ó>  — t        t        |«      j                  «       «      }i }| j                  j	                  «       D ]  \  }}	 |j                  |«      }|||<   Œ |S # t        $ r3}| j                  j                  d|› d|› d|› «       d||<   Y d}~ŒXd}~ww xY w)z@Run all configured extractors directly on a given PDF file path.zExtractor 'z' failed for z: N)	Ústrr   r   r   ÚitemsÚextractrA   r   r8   )r   Úpdf_pathÚresultsrE   Ú	extractorÚvaluerK   s          r   Úextract_allz$MetadataExtractorFactory.extract_all@   s¡   € ä”t˜H“~×-Ñ-Ó/Ó0ˆØ"$ˆà $§¡× 5Ñ 5Ö 7ÑˆE9ğ&Ø!×)Ñ)¨(Ó3Ø!&˜’ğ !8ğ ˆøô	 ò &Ø—‘×#Ñ# k°%°¸ÀhÀZÈrĞRSĞQTĞ$UÔVØ!%˜–ûğ&ús   ÁA Á 	BÁ))BÂBN)r   z	List[str]r   z
-str | Path)r   úDict[str, Any]Úreturnr	   )rV   ÚNone)rP   rM   rV   rU   )	r   Ú
-__module__Ú__qualname__Ú__doc__r   Úclassmethodr"   r   rT   © r   r   r	   r	      s,   „ ñó ğ ò<ó ğ<óRô@r   r	   )Ú
-__future__r   Útypingr   r   r   r9   r   Úpathlibr   r	   r\   r   r   Ú<module>r`      s#   ğİ "ß "Ñ "Û Û İ ÷Eò Er   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__pycache__\__init__.cpython-312.pyc ==== 
-Ë
-    +İi    ã                    ó   — y )N© r   ó    úPC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__init__.pyÚ<module>r      s   ñr   .

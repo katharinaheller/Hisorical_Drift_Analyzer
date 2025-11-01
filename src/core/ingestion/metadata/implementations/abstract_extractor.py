@@ -1,4 +1,4 @@
-from __future__ import annotations
+"""from __future__ import annotations
 from typing import Optional
 from pathlib import Path
 from lxml import etree
@@ -69,4 +69,4 @@ class AbstractExtractor:
                 return re.sub(r"\s+", " ", abs_text.strip())
         except Exception:
             return None
-        return None
+        return None"""

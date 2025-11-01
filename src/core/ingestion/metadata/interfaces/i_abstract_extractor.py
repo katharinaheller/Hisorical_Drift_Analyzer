@@ -1,4 +1,4 @@
-from __future__ import annotations
+"""from __future__ import annotations
 from typing import Any, Dict
 from lxml import etree
 import re
@@ -29,3 +29,4 @@ class AbstractExtractor(IAbstractExtractor):
         except Exception:
             return None
         return None
+"""

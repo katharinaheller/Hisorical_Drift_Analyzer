@@ -1,1334 +1,0 @@
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\all_ingestion_files.txt ==== 
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\all_ingestion_files.txt ==== 
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\config_loader.py ==== 
-# src/core/ingestion/config_loader.py
-from __future__ import annotations
-import os
-import yaml
-from pathlib import Path
-from typing import Any, Dict
-
-
-class ConfigLoader:
-    """Loads YAML configurations and expands ${base_dir} placeholders."""
-
-    def __init__(self, path: str):
-        self.path = Path(path)
-        if not self.path.exists():
-            raise FileNotFoundError(f"Configuration file not found: {self.path}")
-
-        with open(self.path, "r", encoding="utf8") as f:
-            self._raw = yaml.safe_load(f) or {}
-
-        # derive base_dir either from YAML or config file location
-        self.base_dir = Path(
-            self._raw.get("global", {}).get("base_dir", self.path.parent)
-        ).resolve()
-
-        self.config = self._expand_vars(self._raw)
-
-    def _expand_vars(self, data: Any) -> Any:
-        """Recursively replace ${base_dir} in nested structures."""
-        if isinstance(data, dict):
-            return {k: self._expand_vars(v) for k, v in data.items()}
-        elif isinstance(data, list):
-            return [self._expand_vars(v) for v in data]
-        elif isinstance(data, str):
-            return data.replace("${base_dir}", str(self.base_dir))
-        else:
-            return data
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Access top-level config sections like 'ingestion' or 'options'."""
-        return self.config.get(key, default)
-
-    def get_ocr_settings(self) -> Dict[str, Any]:
-        """Return OCR settings dict with expanded tesseract path."""
-        opts = (
-            self.config.get("options", {})
-            or self.config.get("ingestion", {}).get("options", {})
-            or {}
-        )
-        ocr = opts.get("ocr", {})
-        cmd = ocr.get("tesseract_cmd")
-        if cmd:
-            cmd = os.path.expandvars(cmd)
-            if not os.path.isfile(cmd):
-                raise FileNotFoundError(
-                    f"Tesseract binary not found at configured path: {cmd}"
-                )
-        else:
-            cmd = None
-        return {
-            "enabled": bool(opts.get("enable_ocr", False)),
-            "lang": ocr.get("lang", "eng"),
-            "tesseract_cmd": cmd,
-            "psm": ocr.get("psm", 3),
-        }
-
-
-def load_config(path: str) -> Dict[str, Any]:
-    """Convenience wrapper returning parsed and expanded config dict."""
-    return ConfigLoader(path).config
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\ingestion_orchestrator.py ==== 
-from __future__ import annotations
-from pathlib import Path
-import json
-import logging
-
-from src.core.ingestion.config_loader import ConfigLoader
-from src.core.ingestion.parser.parser_factory import ParserFactory
-from src.core.ingestion.utils.file_utils import ensure_dir
-
-
-def main():
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
-    cfg = ConfigLoader("configs/ingestion.yaml").config
-    factory = ParserFactory(cfg)
-    parser = factory.create_parser()
-    ocr = factory.create_ocr()
-
-    raw_dir = Path(cfg["paths"]["raw_pdfs"])
-    parsed_dir = Path(cfg["paths"]["parsed"])
-    ensure_dir(parsed_dir)
-
-    pdf_files = list(raw_dir.glob("*.pdf"))
-    logging.info(f"Found {len(pdf_files)} PDFs to process.")
-
-    for pdf in pdf_files:
-        logging.info(f"Parsing {pdf.name} ...")
-        try:
-            result = parser.parse(str(pdf))
-            text = result["text"].strip()
-
-            # optional OCR fallback
-            if factory.enable_ocr and len(text) < 50 and ocr is not None:
-                logging.info(f"Text layer empty â†’ applying OCR on {pdf.name}")
-                result = ocr.parse(str(pdf))
-
-            out_path = parsed_dir / f"{pdf.stem}.parsed.json"
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-
-            logging.info(f"âœ“ Parsed {pdf.name} successfully")
-
-        except Exception as e:
-            logging.error(f"Failed to parse {pdf.name}: {e}")
-
-    logging.info("All documents processed.")
-
-
-if __name__ == "__main__":
-    main()
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\ingestor.py ==== 
-# src/core/ingestion/ingestor.py
-from __future__ import annotations
-
-from pathlib import Path
-from typing import Dict, Any, List, Optional
-
-from docling.document_converter import DocumentConverter
-from src.core.ingestion.interfaces.i_ingestor import IIngestor
-
-
-class Ingestor(IIngestor):
-    # Handles PDF ingestion using Docling (no chunking)
-    def __init__(self, enable_ocr: bool = True):
-        self.enable_ocr = enable_ocr
-        self.converter = DocumentConverter()
-
-    def ingest(self, source_path: str) -> Dict[str, Any]:
-        pdf_path = Path(source_path)
-        if not pdf_path.exists():
-            raise FileNotFoundError(f"File not found: {pdf_path}")
-
-        # Perform robust conversion using Docling
-        result = self.converter.convert(str(pdf_path))
-        document = getattr(result, "document", None)
-
-        # Extract plain text (fallback if needed)
-        text = ""
-        if document:
-            if hasattr(document, "export_to_markdown"):
-                text = document.export_to_markdown()
-            elif hasattr(document, "text"):
-                text = document.text
-
-        # Build metadata
-        metadata = {
-            "source_file": pdf_path.name,
-            "source_path": str(pdf_path),
-            "page_count": self._get_page_count(document),
-            "has_ocr": self._has_ocr(document),
-            "toc": self._extract_toc(document),
-        }
-
-        # Single-chunk representation (no splitting yet)
-        chunks = [{"text": text, "page": None, "bbox": None}] if text else []
-
-        return {"metadata": metadata, "chunks": chunks}
-
-    # -------------------------------------------------------
-    def _get_page_count(self, document: Any) -> Optional[int]:
-        if document is None:
-            return None
-        return len(getattr(document, "pages", []))
-
-    def _has_ocr(self, document: Any) -> bool:
-        if document is None:
-            return False
-        return bool(getattr(document, "ocr_content", None))
-
-    def _extract_toc(self, document: Any) -> List[Dict[str, Any]]:
-        toc: List[Dict[str, Any]] = []
-        if document and hasattr(document, "outline_items") and document.outline_items:
-            for item in document.outline_items:
-                toc.append({
-                    "title": getattr(item, "title", ""),
-                    "page": getattr(item, "page_number", None),
-                })
-        return toc
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata_merger.py ==== 
-# src/core/ingestion/metadata_merger.py
-from __future__ import annotations
-
-from typing import Dict, Any, List
-
-
-def merge_metadata(doc_metadata: Dict[str, Any], chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # attaches document-level metadata to every chunk
-    merged: List[Dict[str, Any]] = []
-    for idx, ch in enumerate(chunks):
-        new_ch = {
-            "id": f"{doc_metadata.get('source_file', 'doc')}_{idx}",
-            "text": ch.get("text", ""),
-            "page": ch.get("page"),
-            "bbox": ch.get("bbox"),
-            "metadata": dict(doc_metadata),
-        }
-        merged.append(new_ch)
-    return merged
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\__init__.py ==== 
-
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\adaptive_chunker.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\i_chunker.py ==== 
-from __future__ import annotations
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
-
-
-class IChunker(ABC):
-    """Interface for all chunking strategies."""
-
-    @abstractmethod
-    def chunk(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """
-        Split cleaned text into small units.
-        Each returned item should at least have: {"text": ..., "metadata": {...}}
-        """
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\static_chunker.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\utils_chunking.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\chunking\__init__.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\i_text_cleaner.py ==== 
-from __future__ import annotations
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
-
-
-class ITextCleaner(ABC):
-    """Interface for all text cleaning strategies."""
-
-    @abstractmethod
-    def clean(self, text: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Clean raw text and return normalized version.
-        Context can contain metadata or page info.
-        """
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rag_text_cleaner.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__init__.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\interfaces\i_ingestor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any
-
-class IIngestor(ABC):
-    """Interface for all ingestion components."""
-
-    @abstractmethod
-    def ingest(self, source_path: str) -> Any:
-        """Convert one document into structured JSON chunks and metadata."""
-        pass
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\interfaces\__init__.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\metadata_extractor_factory.py ==== 
-from __future__ import annotations
-from typing import Any, Dict, List
-import importlib
-import logging
-
-
-class MetadataExtractorFactory:
-    """
-    Dynamically loads and runs metadata extractors based on YAML configuration.
-    Each extractor implementation must expose a class named <Name>Extractor in
-    the module src.core.ingestion.metadata.implementations.<name>_extractor.
-    """
-
-    def __init__(self, active_fields: List[str]):
-        self.logger = logging.getLogger(__name__)
-        self.active_fields = active_fields
-        self.extractors: Dict[str, Any] = {}
-        self._load_extractors()
-
-    # ------------------------------------------------------------------
-    @classmethod
-    def from_config(cls, cfg: Dict[str, Any]) -> MetadataExtractorFactory:
-        """Initialize factory from ingestion.yaml configuration."""
-        opts = cfg.get("options", {})
-        active = opts.get("metadata_fields", [])
-        return cls(active_fields=active)
-
-    # ------------------------------------------------------------------
-    def _load_extractors(self) -> None:
-        """Dynamically import extractor implementations for requested fields."""
-        base_pkg = "src.core.ingestion.metadata.implementations"
-
-        mapping = {
-            "title": "title_extractor",
-            "authors": "author_extractor",
-            "year": "year_extractor",
-            "abstract": "abstract_extractor",
-            "detected_language": "language_detector",
-            "file_size": "file_size_extractor",
-            "toc": "toc_extractor",  # newly added TOC mapping
-        }
-
-        for field in self.active_fields:
-            module_name = mapping.get(field)
-            if not module_name:
-                self.logger.warning(f"No extractor mapping found for field '{field}' â†’ skipped.")
-                continue
-
-            try:
-                module = importlib.import_module(f"{base_pkg}.{module_name}")
-                class_name = "".join([part.capitalize() for part in field.split("_")]) + "Extractor"
-                extractor_class = getattr(module, class_name)
-                self.extractors[field] = extractor_class()
-                self.logger.debug(f"Loaded extractor: {extractor_class.__name__} for field '{field}'")
-            except ModuleNotFoundError:
-                self.logger.warning(f"Implementation missing for '{field}' ({module_name}.py not found).")
-            except Exception as e:
-                self.logger.error(f"Failed to load extractor for '{field}': {e}")
-
-    # ------------------------------------------------------------------
-    def extract_all(self, pdf_path: str, parsed_document: Dict[str, Any]) -> Dict[str, Any]:
-        """Run all configured extractors and combine their results."""
-        results: Dict[str, Any] = {}
-        for field, extractor in self.extractors.items():
-            try:
-                # file_size has a distinct signature
-                if field == "file_size":
-                    value = extractor.extract(pdf_path)
-                # language detection uses detect() instead of extract()
-                elif field == "detected_language":
-                    value = extractor.detect(
-                        parsed_document.get("text", ""),
-                        parsed_document.get("metadata", {}),
-                    )
-                # all other extractors follow the common signature
-                else:
-                    value = extractor.extract(pdf_path, parsed_document)
-                results[field] = value
-            except Exception as e:
-                self.logger.warning(f"Extractor '{field}' failed: {e}")
-                results[field] = None
-        return results
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__init__.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\abstract_extractor.py ==== 
-from __future__ import annotations
-from typing import Any, Dict
-from lxml import etree
-import re
-
-
-class AbstractExtractor:
-    """Extracts the abstract section from GROBID XML or text."""
-
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        xml = parsed_document.get("grobid_xml")
-        if xml:
-            try:
-                root = etree.fromstring(xml.encode("utf-8"))
-                ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-                abs_text = root.xpath("string(//tei:abstract)", namespaces=ns)
-                if abs_text and len(abs_text.strip()) > 10:
-                    return re.sub(r"\s+", " ", abs_text.strip())
-            except Exception:
-                pass
-
-        text = parsed_document.get("text", "")
-        if text:
-            m = re.search(r"abstract[:\-]?\s*(.{50,500})", text, re.I | re.S)
-            if m:
-                return re.sub(r"\s+", " ", m.group(1).strip())
-
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\author_extractor.py ==== 
-from __future__ import annotations
-from typing import Any, Dict, List
-import re
-from lxml import etree
-
-
-class AuthorsExtractor:
-    """Extracts author names from GROBID TEI XML or PDF metadata."""
-
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> List[str]:
-        xml_data = parsed_document.get("grobid_xml")
-        if xml_data:
-            authors = self._extract_from_grobid(xml_data)
-            if authors:
-                return authors
-
-        # fallback to PDF metadata if present
-        meta = parsed_document.get("metadata", {})
-        author_field = meta.get("author") or meta.get("authors")
-        if isinstance(author_field, str):
-            return [author_field]
-        if isinstance(author_field, list):
-            return author_field
-
-        return []
-
-    # ------------------------------------------------------------------
-    def _extract_from_grobid(self, xml_data: str) -> List[str]:
-        """Parse GROBID TEI XML to extract author names."""
-        ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-        try:
-            root = etree.fromstring(xml_data.encode("utf8"))
-        except Exception:
-            return []
-
-        authors: List[str] = []
-        for node in root.xpath("//tei:author", namespaces=ns):
-            first = node.xpath("string(.//tei:forename)", namespaces=ns).strip()
-            last = node.xpath("string(.//tei:surname)", namespaces=ns).strip()
-            if first or last:
-                authors.append(" ".join(x for x in [first, last] if x))
-            else:
-                raw = " ".join(node.xpath(".//text()", namespaces=ns)).strip()
-                if raw and not re.search(r"\d", raw):
-                    authors.append(re.sub(r"\s+", " ", raw))
-
-        seen = set()
-        unique = [a for a in authors if not (a in seen or seen.add(a))]
-        return [a for a in unique if 2 <= len(a.split()) <= 4]
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\file_size_extractor.py ==== 
-from __future__ import annotations
-import os
-
-
-class FileSizeExtractor:
-    """Returns file size in bytes."""
-
-    def extract(self, pdf_path: str) -> int | None:
-        try:
-            if not os.path.isfile(pdf_path):
-                return None
-            return os.path.getsize(pdf_path)
-        except Exception:
-            return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\language_detector.py ==== 
-from __future__ import annotations
-from typing import Any, Dict
-import re
-
-try:
-    from langdetect import detect
-    LANGDETECT_AVAILABLE = True
-except ImportError:
-    LANGDETECT_AVAILABLE = False
-
-
-class DetectedLanguageExtractor:
-    """Detects the primary language of a document using langdetect or regex fallback."""
-
-    def detect(self, text: str, metadata: Dict[str, Any] | None = None) -> str | None:
-        if not text or len(text.strip()) < 30:
-            return None
-
-        if LANGDETECT_AVAILABLE:
-            try:
-                lang = detect(text)
-                if lang in ("en", "de"):
-                    return lang
-            except Exception:
-                pass
-
-        text_lower = text.lower()
-
-        if re.search(r"\b(und|nicht|sein|dass|werden|ein|eine|mit|auf|fÃ¼r|dem|den|das|ist|sind|der|die|das)\b", text_lower):
-            return "de"
-
-        if re.search(r"\b(the|and|of|for|with|from|that|this|by|is|are|we|deep|learning|language|model)\b", text_lower):
-            return "en"
-
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\title_extractor.py ==== 
-from __future__ import annotations
-from typing import Any, Dict
-import re
-from lxml import etree
-
-
-class TitleExtractor:
-    """Extracts the main document title from GROBID XML or text."""
-
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        xml = parsed_document.get("grobid_xml")
-        if xml:
-            try:
-                root = etree.fromstring(xml.encode("utf-8"))
-                ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-                paths = [
-                    "//tei:analytic/tei:title[@type='main']",
-                    "//tei:monogr/tei:title[@type='main']",
-                    "//tei:titleStmt/tei:title[@type='main']",
-                    "//tei:titleStmt/tei:title",
-                ]
-                for p in paths:
-                    t = root.xpath(f"string({p})", namespaces=ns)
-                    if t and len(t.strip()) > 2:
-                        return re.sub(r"\s+", " ", t.strip())
-            except Exception:
-                pass
-
-        # fallback: from PDF metadata
-        meta = parsed_document.get("metadata", {})
-        if title := meta.get("title"):
-            return title.strip()
-
-        # fallback: first non-empty text line
-        text = parsed_document.get("text", "")
-        if text:
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-            if lines:
-                return lines[0][:200]
-
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\toc_extractor.py ==== 
-from __future__ import annotations
-from typing import Any, Dict, List
-import fitz
-import re
-
-
-class TocExtractor:
-    """Extracts table of contents (TOC) entries from a PDF using PyMuPDF."""
-
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
-        toc_entries: List[Dict[str, Any]] = []
-        try:
-            doc = fitz.open(pdf_path)
-            toc = doc.get_toc(simple=True)
-
-            # if the PDF has a built-in outline (structured TOC)
-            if toc:
-                for level, title, page in toc:
-                    title_clean = re.sub(r"\s+", " ", title.strip())
-                    if title_clean:
-                        toc_entries.append(
-                            {"level": int(level), "title": title_clean, "page": int(page)}
-                        )
-                return toc_entries
-
-            # fallback: heuristic scan for a textual TOC
-            toc_entries = self._extract_textual_toc(doc)
-            return toc_entries
-
-        except Exception as e:
-            print(f"[WARN] Failed to extract TOC from {pdf_path}: {e}")
-            return []
-
-    def _extract_textual_toc(self, doc: fitz.Document) -> List[Dict[str, Any]]:
-        """Detects textual TOCs from the first few pages heuristically."""
-        toc_entries: List[Dict[str, Any]] = []
-        try:
-            max_pages = min(5, len(doc))
-            pattern = re.compile(r"^\s*(\d{0,2}\.?)+\s*[A-ZÃ„Ã–Ãœa-zÃ¤Ã¶Ã¼].{3,}\s+(\d{1,3})\s*$")
-
-            for i in range(max_pages):
-                text = doc.load_page(i).get_text("text")
-                if not re.search(r"(Inhalt|Contents|Table of Contents)", text, re.I):
-                    continue
-                for line in text.splitlines():
-                    if pattern.match(line.strip()):
-                        parts = re.split(r"\s{2,}", line.strip())
-                        if len(parts) >= 2:
-                            title = re.sub(r"^\d+(\.\d+)*\s*", "", parts[0])
-                            page = re.findall(r"\d+", parts[-1])
-                            page_num = int(page[0]) if page else None
-                            toc_entries.append(
-                                {"level": 1, "title": title.strip(), "page": page_num}
-                            )
-            return toc_entries
-
-        except Exception:
-            return []
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\year_extractor.py ==== 
-from __future__ import annotations
-import re
-import datetime
-from typing import Any, Dict
-from lxml import etree
-
-CURRENT_YEAR = datetime.datetime.now().year
-
-
-class YearExtractor:
-    """Robust heuristic publication year extractor (hybrid AnythingLLM + TEI + metadata fallback)."""
-
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        filename = str(pdf_path)
-        text = parsed_document.get("text", "") or ""
-        xml = parsed_document.get("grobid_xml")
-        metadata = parsed_document.get("metadata", {}) or {}
-
-        # ------------------------------------------------------------------
-        # 1. Try from GROBID TEI XML
-        # ------------------------------------------------------------------
-        if xml:
-            try:
-                root = etree.fromstring(xml.encode("utf-8"))
-                ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-                years = root.xpath("//tei:sourceDesc//tei:date/@when", namespaces=ns)
-                for y in years:
-                    y = y.strip()
-                    if len(y) >= 4 and y[:4].isdigit():
-                        year = int(y[:4])
-                        if 1900 <= year <= CURRENT_YEAR:
-                            return str(year)
-            except Exception:
-                pass
-
-        # ------------------------------------------------------------------
-        # 2. Try from filename (e.g., 2021.12345.pdf)
-        # ------------------------------------------------------------------
-        m = re.search(r"(\d{4})[._-]\d{3,5}", filename)
-        if m:
-            year = int(m.group(1))
-            if 1990 <= year <= CURRENT_YEAR:
-                return str(year)
-
-        # ------------------------------------------------------------------
-        # 3. Try from PDF metadata
-        # ------------------------------------------------------------------
-        for key in ("creationDate", "modDate", "CreationDate", "date"):
-            if key in metadata and isinstance(metadata[key], str):
-                m = re.search(r"(19|20)\d{2}", metadata[key])
-                if m:
-                    year = int(m.group(0))
-                    if 1900 <= year <= CURRENT_YEAR:
-                        return str(year)
-
-        # ------------------------------------------------------------------
-        # 4. Heuristic from text context (AnythingLLM-style)
-        # ------------------------------------------------------------------
-        patterns = [
-            r"(?:published|accepted|received|appeared|proceedings|conference|journal|Â©)\D{0,15}((?:19|20)\d{2})",
-            r"((?:19|20)\d{2})\D{0,15}(?:published|proceedings|conference|journal|volume|issue)",
-        ]
-
-        candidates: list[tuple[str, int]] = []
-        for pat in patterns:
-            for y in re.findall(pat, text, flags=re.I):
-                y = int(y)
-                if 1900 <= y <= CURRENT_YEAR:
-                    candidates.append(("context", y))
-
-        for y in re.findall(r"(?:19|20)\d{2}", text):
-            y = int(y)
-            if 1900 <= y <= CURRENT_YEAR:
-                candidates.append(("plain", y))
-
-        if not candidates:
-            return None
-
-        # ------------------------------------------------------------------
-        # 5. Score by recency and context relevance
-        # ------------------------------------------------------------------
-        scored = []
-        for typ, y in candidates:
-            weight = 2 if typ == "context" else 1
-            score = weight * (1 / (CURRENT_YEAR - y + 1))
-            scored.append((score, y))
-
-        scored.sort(reverse=True)
-        return str(scored[0][1])
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__init__.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\abstract_extractor.cpython-312.pyc ==== 
-Ë
-    BÛií  ã                  óH   — d dl mZ d dlmZmZ d dlmZ d dlZ G d„ d«      Zy)é    )Úannotations)ÚAnyÚDict)ÚetreeNc                  ó   — e Zd ZdZdd„Zy)ÚAbstractExtractorz6Extracts the abstract section from GROBID XML or text.c                óF  — |j                  d«      }|r	 t        j                  |j                  d«      «      }ddi}|j	                  d|¬«      }|rAt        |j                  «       «      dkD  r%t        j                  dd	|j                  «       «      S |j                  d
-d«      }|rlt        j                  d|t        j                  t        j                  z  «      }|r4t        j                  dd	|j                  d«      j                  «       «      S y # t        $ r Y ŒŒw xY w)NÚ
-grobid_xmlzutf-8Úteizhttp://www.tei-c.org/ns/1.0zstring(//tei:abstract))Ú
-namespacesé
-   z\s+Ú ÚtextÚ zabstract[:\-]?\s*(.{50,500})é   )Úgetr   Ú
-fromstringÚencodeÚxpathÚlenÚstripÚreÚsubÚ	ExceptionÚsearchÚIÚSÚgroup)	ÚselfÚpdf_pathÚparsed_documentÚxmlÚrootÚnsÚabs_textr   Úms	            újC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\abstract_extractor.pyÚextractzAbstractExtractor.extract
-   sõ   € Ø×!Ñ! ,Ó/ˆÙğÜ×'Ñ'¨¯
-©
-°7Ó(;Ó<ØĞ:Ğ;ØŸ:™:Ğ&>È2˜:ÓNÙ¤ H§N¡NÓ$4Ó 5¸Ò :ÜŸ6™6 &¨#¨x¯~©~Ó/?Ó@Ğ@ğ ×"Ñ" 6¨2Ó.ˆÙÜ—	‘	Ğ9¸4ÄÇÁÌÏÉÁÓMˆAÙÜ—v‘v˜f c¨1¯7©7°1«:×+;Ñ+;Ó+=Ó>Ğ>àøô ò Ùğús   •A=D Ä	D ÄD N)r    Ústrr!   zDict[str, Any]Úreturnz
-str | None)Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r(   © ó    r'   r   r      s
-   „ Ù@ôr0   r   )	Ú
-__future__r   Útypingr   r   Úlxmlr   r   r   r/   r0   r'   Ú<module>r4      s   ğİ "ß İ Û 	÷ò r0   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\author_extractor.cpython-312.pyc ==== 
-Ë
-    ‘ŞiŸ  ã                  óL   — d dl mZ d dlmZmZmZ d dlZd dlmZ  G d„ d«      Z	y)é    )Úannotations)ÚAnyÚDictÚListN)Úetreec                  ó    — e Zd ZdZdd„Zdd„Zy)ÚAuthorsExtractorz:Extracts author names from GROBID TEI XML or PDF metadata.c                ó  — |j                  d«      }|r| j                  |«      }|r|S |j                  di «      }|j                  d«      xs |j                  d«      }t        |t        «      r|gS t        |t        «      r|S g S )NÚ
-grobid_xmlÚmetadataÚauthorÚauthors)ÚgetÚ_extract_from_grobidÚ
-isinstanceÚstrÚlist)ÚselfÚpdf_pathÚparsed_documentÚxml_datar   ÚmetaÚauthor_fields          úhC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\author_extractor.pyÚextractzAuthorsExtractor.extract
-   s„   € Ø"×&Ñ& |Ó4ˆÙØ×/Ñ/°Ó9ˆGÙØğ ×"Ñ" :¨rÓ2ˆØ—x‘x Ó)Ò@¨T¯X©X°iÓ-@ˆÜl¤CÔ(Ø >Ğ!Ül¤DÔ)ØĞàˆ	ó    c                óJ  — ddi}	 t        j                  |j                  d«      «      }g }|j	                  d|¬«      D ]â  }|j	                  d|¬«      j                  «       }|j	                  d|¬«      j                  «       }|s|r*|j                  dj                  d	„ ||fD «       «      «       Œsdj                  |j	                  d
-|¬«      «      j                  «       }|sŒ¦t        j                  d|«      rŒ½|j                  t        j                  dd|«      «       Œä t        «       }	|D 
-cg c]  }
-|
-|	v rŒ|	j                  |
-«      rŒ|
-‘Œ }}
-|D 
-cg c]*  }
-dt        |
-j                  «       «      cxk  rdk  sŒ&n n|
-‘Œ, c}
-S # t        $ r g cY S w xY wc c}
-w c c}
-w )z-Parse GROBID TEI XML to extract author names.Úteizhttp://www.tei-c.org/ns/1.0Úutf8z//tei:author)Ú
-namespaceszstring(.//tei:forename)zstring(.//tei:surname)Ú c              3  ó&   K  — | ]	  }|sŒ|–— Œ y ­w)N© )Ú.0Úxs     r   Ú	<genexpr>z8AuthorsExtractor._extract_from_grobid.<locals>.<genexpr>)   s   è ø€ Ğ'F±=¨aÂA¬±=ùs   ‚Šz	.//text()z\dz\s+é   é   )r   Ú
-fromstringÚencodeÚ	ExceptionÚxpathÚstripÚappendÚjoinÚreÚsearchÚsubÚsetÚaddÚlenÚsplit)r   r   ÚnsÚrootr   ÚnodeÚfirstÚlastÚrawÚseenÚaÚuniques               r   r   z%AuthorsExtractor._extract_from_grobid   sh  € àĞ2Ğ3ˆğ	Ü×#Ñ# H§O¡O°FÓ$;Ó<ˆDğ  ˆØ—J‘J˜~¸"JÖ=ˆDØ—J‘JĞ8ÀRJÓH×NÑNÓPˆEØ—:‘:Ğ6À2:ÓF×LÑLÓNˆDÙ™Ø—‘˜sŸx™xÑ'F°E¸4±=Ó'FÓFÕGà—h‘h˜tŸz™z¨+À"˜zÓEÓF×LÑLÓNÚœrŸy™y¨°Õ4Ø—N‘N¤2§6¡6¨&°#°sÓ#;Õ<ğ >ô ‹uˆÙ$ÓG™W˜¨Q°$ªY¸$¿(¹(À1½+’!˜WˆĞGÙ!Ó>™6a Q¬#¨a¯g©g«i«.Ô%=¸AÖ%=’˜6Ñ>Ğ>øô! ò 	ØŠIğ	üò HùÚ>s/   †$F
- Ä2	FÄ<FÅFÅ'F Æ F Æ
-FÆFN)r   r   r   zDict[str, Any]Úreturnú	List[str])r   r   r@   rA   )Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   r   r#   r   r   r	   r	      s   „ ÙDóô$?r   r	   )
-Ú
-__future__r   Útypingr   r   r   r0   Úlxmlr   r	   r#   r   r   Ú<module>rI      s   ğİ "ß "Ñ "Û 	İ ÷*?ò *?r   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\file_size_extractor.cpython-312.pyc ==== 
-Ë
-    &Ûif  ã                  ó,   — d dl mZ d dlZ G d„ d«      Zy)é    )ÚannotationsNc                  ó   — e Zd ZdZdd„Zy)ÚFileSizeExtractorzReturns file size in bytes.c                ó    — 	 t         j                  j                  |«      sy t         j                  j                  |«      S # t        $ r Y y w xY w)N)ÚosÚpathÚisfileÚgetsizeÚ	Exception)ÚselfÚpdf_paths     úkC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\file_size_extractor.pyÚextractzFileSizeExtractor.extract   s?   € ğ	Ü—7‘7—>‘> (Ô+ØÜ—7‘7—?‘? 8Ó,Ğ,øÜò 	Ùğ	ús   ‚A ¢A Á	AÁAN)r   ÚstrÚreturnz
-int | None)Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   © ó    r   r   r      s
-   „ Ù%ôr   r   )Ú
-__future__r   r   r   r   r   r   Ú<module>r      s   ğİ "Û 	÷	ò 	r   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\language_detector.cpython-312.pyc ==== 
-Ë
-    œŞi9  ã                  óh   — d dl mZ d dlmZmZ d dlZ	 d dlmZ dZ G d„ d«      Z
-y# e	$ r dZY Œw xY w)	é    )Úannotations)ÚAnyÚDictN)ÚdetectTFc                  ó   — e Zd ZdZddd„Zy)ÚDetectedLanguageExtractorzNDetects the primary language of a document using langdetect or regex fallback.Nc                ó  — |rt        |j                  «       «      dk  ry t        r	 t        |«      }|dv r|S 	 |j                  «       }t        j                  d|«      ryt        j                  d|«      ryy # t        $ r Y ŒJw xY w)Né   )ÚenÚdeuW   \b(und|nicht|sein|dass|werden|ein|eine|mit|auf|fÃ¼r|dem|den|das|ist|sind|der|die|das)\br   zR\b(the|and|of|for|with|from|that|this|by|is|are|we|deep|learning|language|model)\br   )ÚlenÚstripÚLANGDETECT_AVAILABLEr   Ú	ExceptionÚlowerÚreÚsearch)ÚselfÚtextÚmetadataÚlangÚ
-text_lowers        úiC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\language_detector.pyr   z DetectedLanguageExtractor.detect   s‡   € Ù”s˜4Ÿ:™:›<Ó(¨2Ò-ØåğÜ˜d“|Ø˜<Ñ'ØKğ (ğ
- —Z‘Z“\ˆ
-ä9‰9ĞoĞq{Ô|Øä9‰9ĞjĞlvÔwØàøô ò Ùğús   §A8 Á8	BÂB)N)r   Ústrr   zDict[str, Any] | NoneÚreturnz
-str | None)Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r   © ó    r   r   r      s
-   „ ÙXõr!   r   )Ú
-__future__r   Útypingr   r   r   Ú
-langdetectr   r   ÚImportErrorr   r    r!   r   Ú<module>r&      s=   ğİ "ß Û 	ğ!İ!ØĞ÷
-ò øğ	 ò !Ø Òğ!ús   ”' §1°1.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\title_extractor.cpython-312.pyc ==== 
-Ë
-    nÛiÊ  ã                  óH   — d dl mZ d dlmZmZ d dlZd dlmZ  G d„ d«      Zy)é    )Úannotations)ÚAnyÚDictN)Úetreec                  ó   — e Zd ZdZdd„Zy)ÚTitleExtractorz9Extracts the main document title from GROBID XML or text.c                ó”  — |j                  d«      }|r’	 t        j                  |j                  d«      «      }ddi}g d¢}|D ]_  }|j	                  d|› d|¬«      }|sŒt        |j                  «       «      d	kD  sŒ:t        j                  d
-d|j                  «       «      c S  	 |j                  di «      }	|	j                  d«      x}
-r|
-j                  «       S |j                  dd«      }|rF|j                  «       D cg c]#  }|j                  «       sŒ|j                  «       ‘Œ% }}|r|d   d d S y # t        $ r Y Œ›w xY wc c}w )NÚ
-grobid_xmlzutf-8Úteizhttp://www.tei-c.org/ns/1.0)z&//tei:analytic/tei:title[@type='main']z$//tei:monogr/tei:title[@type='main']z'//tei:titleStmt/tei:title[@type='main']z//tei:titleStmt/tei:titlezstring(Ú))Ú
-namespacesé   z\s+Ú ÚmetadataÚtitleÚtextÚ r   éÈ   )Úgetr   Ú
-fromstringÚencodeÚxpathÚlenÚstripÚreÚsubÚ	ExceptionÚ
-splitlines)ÚselfÚpdf_pathÚparsed_documentÚxmlÚrootÚnsÚpathsÚpÚtÚmetar   r   ÚlÚliness                 úgC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\title_extractor.pyÚextractzTitleExtractor.extract
-   s=  € Ø×!Ñ! ,Ó/ˆÙğÜ×'Ñ'¨¯
-©
-°7Ó(;Ó<ØĞ:Ğ;òó AØŸ
-™
- W¨Q¨C¨q >¸b˜
-ÓAAÚœS §¡£›^¨aÓ/Ü!Ÿv™v f¨c°1·7±7³9Ó=Ò=ñ ğ ×"Ñ" :¨rÓ2ˆØ—H‘H˜WÓ%Ğ%ˆ5Ğ%Ø—;‘;“=Ğ ğ ×"Ñ" 6¨2Ó.ˆÙØ(,¯©Ô(9ÓGÑ(9 1¸Q¿W¹W½YQ—W‘W•YĞ(9ˆEĞGÙØ˜Q‘x  ~Ğ%àøô ò Ùğüò Hs0   •A
-D6 Á D6 Á=&D6 Â$D6 ÄEÄEÄ6	EÅEN)r    Ústrr!   zDict[str, Any]Úreturnz
-str | None)Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r,   © ó    r+   r   r      s
-   „ ÙCôr4   r   )	Ú
-__future__r   Útypingr   r   r   Úlxmlr   r   r3   r4   r+   Ú<module>r8      s   ğİ "ß Û 	İ ÷"ò "r4   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\toc_extractor.cpython-312.pyc ==== 
-Ë
-    åàiˆ	  ã                  óH   — d dl mZ d dlmZmZmZ d dlZd dlZ G d„ d«      Zy)é    )Úannotations)ÚAnyÚDictÚListNc                  ó"   — e Zd ZdZddd„Zdd„Zy)ÚTocExtractorzBExtracts table of contents (TOC) entries from a PDF using PyMuPDF.Nc                óŠ  — g }	 t        j                  |«      }|j                  d¬«      }|r\|D ]U  \  }}}t        j                  dd|j                  «       «      }	|	sŒ/|j                  t        |«      |	t        |«      dœ«       ŒW |S | j                  |«      }|S # t        $ r}
-t        d|› d|
-› «       g cY d }
-~
-S d }
-~
-ww xY w)NT)Úsimplez\s+Ú ©ÚlevelÚtitleÚpagez"[WARN] Failed to extract TOC from z: )ÚfitzÚopenÚget_tocÚreÚsubÚstripÚappendÚintÚ_extract_textual_tocÚ	ExceptionÚprint)ÚselfÚpdf_pathÚparsed_documentÚtoc_entriesÚdocÚtocr   r   r   Útitle_cleanÚes              úeC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\toc_extractor.pyÚextractzTocExtractor.extract
-   sÉ   € Ø,.ˆğ	Ü—)‘)˜HÓ%ˆCØ—+‘+ T+Ó*ˆCñ Û*-Ñ&E˜5 $Ü"$§&¡&¨°°e·k±k³mÓ"DKÚ"Ø#×*Ñ*Ü&)¨%£j¸;ÔPSĞTXÓPYÑZõğ +.ğ #Ğ"ğ ×3Ñ3°CÓ8ˆKØĞøäò 	ÜĞ6°x°jÀÀ1À#ĞFÔGØIûğ	ús*   „AB Á*B Â	B Â	CÂ%B=Â7CÂ=Cc                óÒ  — g }	 t        dt        |«      «      }t        j                  d«      }t	        |«      D ]  }|j                  |«      j                  d«      }t        j                  d|t        j                  «      sŒJ|j                  «       D ]½  }|j                  |j                  «       «      sŒ#t        j                  d|j                  «       «      }t        |«      dk\  sŒVt        j                  dd|d	   «      }	t        j                  d
-|d   «      }
-|
-rt        |
-d	   «      nd}|j!                  d|	j                  «       |dœ«       Œ¿ Œ |S # t"        $ r g cY S w xY w)z<Detects textual TOCs from the first few pages heuristically.é   u=   ^\s*(\d{0,2}\.?)+\s*[A-ZÃ„Ã–Ãœa-zÃ¤Ã¶Ã¼].{3,}\s+(\d{1,3})\s*$Útextz#(Inhalt|Contents|Table of Contents)z\s{2,}é   z^\d+(\.\d+)*\s*Ú r   z\d+éÿÿÿÿNé   r   )ÚminÚlenr   ÚcompileÚrangeÚ	load_pageÚget_textÚsearchÚIÚ
-splitlinesÚmatchr   Úsplitr   Úfindallr   r   r   )r   r   r   Ú	max_pagesÚpatternÚir'   ÚlineÚpartsr   r   Úpage_nums               r#   r   z!TocExtractor._extract_textual_toc"   s%  € à,.ˆğ	Ü˜Aœs 3›xÓ(ˆIÜ—j‘jĞ!aÓbˆGä˜9×%Ø—}‘} QÓ'×0Ñ0°Ó8Ü—y‘yĞ!GÈÌrÏtÉtÔTØØ ŸO™OÖ-DØ—}‘} T§Z¡Z£\Õ2Ü "§¡¨°D·J±J³LÓ A˜Ü˜u›:¨›?Ü$&§F¡FĞ+=¸rÀ5ÈÁ8Ó$L˜EÜ#%§:¡:¨f°e¸B±iÓ#@˜DÙ7;¤s¨4°©7¤|À˜HØ'×.Ñ.Ø*+°e·k±k³mÈXÑ Võò .ğ	 &ğ Ğøäò 	ØŠIğ	ús   „B1E Â62E Ã)A.E ÅE&Å%E&)N)r   Ústrr   zDict[str, Any] | NoneÚreturnúList[Dict[str, Any]])r   zfitz.Documentr?   r@   )Ú__name__Ú
-__module__Ú__qualname__Ú__doc__r$   r   © ó    r#   r   r      s   „ ÙLôô0rF   r   )	Ú
-__future__r   Útypingr   r   r   r   r   r   rE   rF   r#   Ú<module>rI      s   ğİ "ß "Ñ "Û Û 	÷3ò 3rF   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\year_extractor.cpython-312.pyc ==== 
-Ë
-    Ÿâi¯  ã                  ó˜   — d dl mZ d dlZd dlZd dlmZmZ d dlmZ ej                  j                  «       j                  Z G d„ d«      Zy)é    )ÚannotationsN)ÚAnyÚDict)Úetreec                  ó   — e Zd ZdZdd„Zy)ÚYearExtractorz[Robust heuristic publication year extractor (hybrid AnythingLLM + TEI + metadata fallback).c                ó¬  — t        |«      }|j                  dd«      xs d}|j                  d«      }|j                  di «      xs i }|r¤	 t        j                  |j	                  d«      «      }ddi}|j                  d|¬	«      }	|	D ]b  }
-|
-j                  «       }
-t        |
-«      d
-k\  sŒ"|
-d d
- j                  «       sŒ6t        |
-d d
- «      }d|cxk  r
-t        k  sŒTn ŒWt        |«      c S  	 t        j                  d|«      }|r5t        |j                  d«      «      }d|cxk  rt        k  rt        |«      S  dD ]p  }||v sŒt        ||   t         «      sŒt        j                  d||   «      }|sŒ8t        |j                  d«      «      }d|cxk  r
-t        k  sŒbn Œet        |«      c S  ddg}g }|D ]^  }t        j                   ||t        j"                  ¬«      D ]3  }
-t        |
-«      }
-d|
-cxk  r
-t        k  sŒn Œ!|j%                  d|
-f«       Œ5 Œ` t        j                   d|«      D ]3  }
-t        |
-«      }
-d|
-cxk  r
-t        k  sŒn Œ!|j%                  d|
-f«       Œ5 |sy g }|D ]3  \  }}
-|dk(  rdnd}|dt        |
-z
-  dz   z  z  }|j%                  ||
-f«       Œ5 |j'                  d¬«       t        |d   d   «      S # t        $ r Y Œãw xY w)NÚtextÚ Ú
-grobid_xmlÚmetadatazutf-8Úteizhttp://www.tei-c.org/ns/1.0z //tei:sourceDesc//tei:date/@when)Ú
-namespacesé   il  z(\d{4})[._-]\d{3,5}é   iÆ  )ÚcreationDateÚmodDateÚCreationDateÚdatez(19|20)\d{2}r   ub   (?:published|accepted|received|appeared|proceedings|conference|journal|Â©)\D{0,15}((?:19|20)\d{2})zQ((?:19|20)\d{2})\D{0,15}(?:published|proceedings|conference|journal|volume|issue))ÚflagsÚcontextz(?:19|20)\d{2}Úplainé   T)Úreverse)ÚstrÚgetr   Ú
-fromstringÚencodeÚxpathÚstripÚlenÚisdigitÚintÚCURRENT_YEARÚ	ExceptionÚreÚsearchÚgroupÚ
-isinstanceÚfindallÚIÚappendÚsort)ÚselfÚpdf_pathÚparsed_documentÚfilenamer
-   Úxmlr   ÚrootÚnsÚyearsÚyÚyearÚmÚkeyÚpatternsÚ
-candidatesÚpatÚscoredÚtypÚweightÚscores                        úfC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\year_extractor.pyÚextractzYearExtractor.extract   s³  € Üx“=ˆØ×"Ñ" 6¨2Ó.Ò4°"ˆØ×!Ñ! ,Ó/ˆØ"×&Ñ& z°2Ó6Ò<¸"ˆñ
- ğÜ×'Ñ'¨¯
-©
-°7Ó(;Ó<ØĞ:Ğ;ØŸ
-™
-Ğ#EĞRT˜
-ÓUÛAØŸ™›	AÜ˜1“v “{ q¨¨! u§}¡}¥Ü" 1 R a 5›z˜Ø 4Ô7¬<Ö7Ü#& t£9Ò,ñ ô I‰IĞ,¨hÓ7ˆÙÜq—w‘w˜q“z“?ˆDØtÔ+œ|Ò+Ü˜4“yĞ ğ ,ó GˆCØhŠ¤:¨h°s©m¼SÕ#AÜ—I‘I˜o¨x¸©}Ó=ÚÜ˜qŸw™w q›z›?DØ˜tÔ3¤|Ö3Ü" 4›yÒ(ğ Gğ rØ`ğ
-ˆğ
- -/ˆ
-ÛˆCÜ—Z‘Z  T´·±×6Ü˜“FØ˜1Ô,¤Ö,Ø×%Ñ% y°! nÕ5ñ 7ğ ô —‘Ğ-¨tÖ4ˆAÜA“ˆAØqÔ(œLÖ(Ø×!Ñ! 7¨A ,Õ/ğ 5ñ
- Øğ
- ˆÛ ‰FˆCØ Ò*‘Q°ˆFØ˜a¤<°!Ñ#3°aÑ#7Ñ8Ñ9ˆEØM‰M˜5 !˜*Õ%ğ !ğ
- 	‰˜DˆÔ!Ü6˜!‘9˜Q‘<Ó Ğ øôq ò Úğús+   ÁAK Â+K Â?K ÃK Ã-K Ë	KËKN)r/   r   r0   zDict[str, Any]Úreturnz
-str | None)Ú__name__Ú
-__module__Ú__qualname__Ú__doc__rB   © ó    rA   r   r   
-   s   „ ÙeôL!rI   r   )Ú
-__future__r   r&   ÚdatetimeÚtypingr   r   Úlxmlr   Únowr7   r$   r   rH   rI   rA   Ú<module>rO      s:   ğİ "Û 	Û ß İ à× Ñ ×$Ñ$Ó&×+Ñ+€÷O!ò O!rI   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__pycache__\__init__.cpython-312.pyc ==== 
-Ë
-    İi    ã                    ó   — y )N© r   ó    ú`C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\implementations\__init__.pyÚ<module>r      s   ñr   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_abstract_extractor.py ==== 
-from __future__ import annotations
-from typing import Any, Dict
-from lxml import etree
-import re
-from src.core.ingestion.metadata.interfaces.i_abstract_extractor import IAbstractExtractor
-
-class AbstractExtractor(IAbstractExtractor):
-    """Extracts abstract section using GROBID TEI XML."""
-
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        xml_data = parsed_document.get("grobid_xml")
-        if not xml_data or not xml_data.strip().startswith("<"):
-            return None
-
-        try:
-            ns = {"tei": "http://www.tei-c.org/ns/1.0"}
-            root = etree.fromstring(xml_data.encode("utf8"))
-            # collect all text under <abstract> or <div type='abstract'>
-            xpath_candidates = [
-                "//tei:abstract",
-                "//tei:div[@type='abstract']",
-                "//tei:profileDesc/tei:abstract",
-            ]
-            for path in xpath_candidates:
-                text = root.xpath(f"string({path})", namespaces=ns)
-                if text and len(text.strip()) > 20:
-                    cleaned = re.sub(r"\s+", " ", text.strip())
-                    return cleaned
-        except Exception:
-            return None
-        return None
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_author_extractor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List
-
-class IAuthorExtractor(ABC):
-    """Interface for extracting document authors."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> List[str]:
-        """Extract author names as a list of strings."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_file_size_extractor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict
-
-class IFileSizeExtractor(ABC):
-    """Interface for extracting the file size of a PDF."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str) -> int | None:
-        """Return file size in bytes."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_language_detector.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict
-
-class ILanguageDetector(ABC):
-    """Interface for detecting the main document language."""
-
-    @abstractmethod
-    def detect(self, text: str, metadata: Dict[str, Any] | None = None) -> str | None:
-        """Detect the dominant language code (e.g. 'en', 'de')."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_title_extractor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict
-
-class ITitleExtractor(ABC):
-    """Interface for extracting the main document title."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        """Extract the document title."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\i_year_extractor.py ==== 
-from abc import ABC, abstractmethod
-from typing import Any, Dict
-
-class IYearExtractor(ABC):
-    """Interface for extracting publication year."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any]) -> str | None:
-        """Extract the publication year as string (e.g. '2023')."""
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\toc_extractor_interface.py ==== 
-from __future__ import annotations
-from typing import Any, Dict, List
-from abc import ABC, abstractmethod
-
-
-class TocExtractorInterface(ABC):
-    """Interface for table-of-contents extractors."""
-
-    @abstractmethod
-    def extract(self, pdf_path: str, parsed_document: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
-        """
-        Extracts the table of contents (TOC) from a given PDF file.
-
-        Returns:
-            A list of dictionaries with keys:
-                - level: int
-                - title: str
-                - page: int
-        """
-        pass
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\interfaces\__init__.py ==== 
-# Expose all interfaces for clean import
-from .i_title_extractor import ITitleExtractor
-from .i_author_extractor import IAuthorExtractor
-from .i_year_extractor import IYearExtractor
-from .i_abstract_extractor import IAbstractExtractor
-from .i_language_detector import ILanguageDetector
-from .i_file_size_extractor import IFileSizeExtractor
-from .i_has_ocr_extractor import IHasOcrExtractor
-
-__all__ = [
-    "ITitleExtractor",
-    "IAuthorExtractor",
-    "IYearExtractor",
-    "IAbstractExtractor",
-    "ILanguageDetector",
-    "IFileSizeExtractor",
-    "IHasOcrExtractor",
-]
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__pycache__\metadata_extractor_factory.cpython-312.pyc ==== 
-Ë
-    YáiÆ  ã                  óH   — d dl mZ d dlmZmZmZ d dlZd dlZ G d„ d«      Zy)é    )Úannotations)ÚAnyÚDictÚListNc                  ó:   — e Zd ZdZdd„Zedd„«       Zd	d„Zd
-d„Zy)ÚMetadataExtractorFactoryzñ
-    Dynamically loads and runs metadata extractors based on YAML configuration.
-    Each extractor implementation must expose a class named <Name>Extractor in
-    the module src.core.ingestion.metadata.implementations.<name>_extractor.
-    c                ó|   — t        j                  t        «      | _        || _        i | _        | j                  «        y )N)ÚloggingÚ	getLoggerÚ__name__ÚloggerÚactive_fieldsÚ
-extractorsÚ_load_extractors)Úselfr   s     úbC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\metadata_extractor_factory.pyÚ__init__z!MetadataExtractorFactory.__init__   s/   € Ü×'Ñ'¬Ó1ˆŒØ*ˆÔØ*,ˆŒØ×ÑÕó    c                ó\   — |j                  di «      }|j                  dg «      } | |¬«      S )z5Initialize factory from ingestion.yaml configuration.ÚoptionsÚmetadata_fields)r   )Úget)ÚclsÚcfgÚoptsÚactives       r   Úfrom_configz$MetadataExtractorFactory.from_config   s0   € ğ w‰wy "Ó%ˆØ—‘Ğ+¨RÓ0ˆÙ Ô(Ğ(r   c           	     óÄ  — d}dddddddd	œ}| j                   D ]Û  }|j                  |«      }|s | j                  j                  d
-|› d«       Œ6	 t	        j
-                  |› d|› «      }dj                  |j                  d«      D cg c]  }|j                  «       ‘Œ c}«      dz   }t        ||«      } |«       | j                  |<   | j                  j                  d|j                  › d|› d«       Œİ yc c}w # t        $ r& | j                  j                  d|› d|› d«       Y Œt        $ r,}	| j                  j                  d|› d|	› «       Y d}	~	ŒAd}	~	ww xY w)zBDynamically import extractor implementations for requested fields.z+src.core.ingestion.metadata.implementationsÚtitle_extractorÚauthor_extractorÚyear_extractorÚabstract_extractorÚlanguage_detectorÚfile_size_extractorÚtoc_extractor)ÚtitleÚauthorsÚyearÚabstractÚdetected_languageÚ	file_sizeÚtocz&No extractor mapping found for field 'u   ' â†’ skipped.Ú.Ú Ú_Ú	ExtractorzLoaded extractor: z for field 'Ú'zImplementation missing for 'z' (z.py not found).zFailed to load extractor for 'z': N)r   r   r   ÚwarningÚ	importlibÚimport_moduleÚjoinÚsplitÚ
-capitalizeÚgetattrr   Údebugr   ÚModuleNotFoundErrorÚ	ExceptionÚerror)
-r   Úbase_pkgÚmappingÚfieldÚmodule_nameÚmoduleÚpartÚ
-class_nameÚextractor_classÚes
-             r   r   z)MetadataExtractorFactory._load_extractors   sr  € à@ˆğ 'Ø)Ø$Ø,Ø!4Ø.Ø"ñ
-ˆğ ×'Ô'ˆEØ!Ÿ+™+ eÓ,ˆKÙØ—‘×#Ñ#Ğ&LÈUÈGĞSaĞ$bÔcØğ	RÜ"×0Ñ0°H°:¸Q¸{¸mĞ1LÓMØŸW™WÀEÇKÁKĞPSÔDTÓ%UÑDT¸D d§o¡oÕ&7ĞDTÑ%UÓVĞYdÑd
-Ü")¨&°*Ó"=Ù)8Ó):—‘ Ñ&Ø—‘×!Ñ!Ğ$6°×7OÑ7OĞ6PĞP\Ğ]bĞ\cĞcdĞ"eÕfñ (ùò &Vøô 'ò kØ—‘×#Ñ#Ğ&BÀ5À'ÈÈ[ÈMĞYhĞ$i×jÜò RØ—‘×!Ñ!Ğ$BÀ5À'ÈÈQÈCĞ"P×QÒQûğRús1   Á8C=ÂC8
-ÂAC=Ã8C=Ã=+EÄ+EÄ3!EÅEc                ó”  — i }| j                   j                  «       D ]l  \  }}	 |dk(  r|j                  |«      }nJ|dk(  r3|j                  |j	                  dd«      |j	                  di «      «      }n|j                  ||«      }|||<   Œn |S # t
-        $ r0}| j                  j                  d|› d|› «       d||<   Y d}~Œ¥d}~ww xY w)	z8Run all configured extractors and combine their results.r+   r*   Útextr.   ÚmetadatazExtractor 'z
-' failed: N)r   ÚitemsÚextractÚdetectr   r;   r   r2   )r   Úpdf_pathÚparsed_documentÚresultsr?   Ú	extractorÚvaluerE   s           r   Úextract_allz$MetadataExtractorFactory.extract_all=   s×   € à"$ˆØ $§¡× 5Ñ 5Ö 7ÑˆE9ğ&à˜KÒ'Ø%×-Ñ-¨hÓ7‘EàĞ1Ò1Ø%×,Ñ,Ø'×+Ñ+¨F°BÓ7Ø'×+Ñ+¨J¸Ó;ó‘Eğ &×-Ñ-¨h¸ÓHEØ!&˜’ğ !8ğ$ ˆøô ò &Ø—‘×#Ñ# k°%°¸
-À1À#Ğ$FÔGØ!%˜–ûğ&ús   ¤A&BÂ	CÂ&CÃCN)r   z	List[str])r   úDict[str, Any]Úreturnr   )rS   ÚNone)rL   ÚstrrM   rR   rS   rR   )	r   Ú
-__module__Ú__qualname__Ú__doc__r   Úclassmethodr   r   rQ   © r   r   r   r      s,   „ ñó ğ ò)ó ğ)óRô@r   r   )	Ú
-__future__r   Útypingr   r   r   r3   r
-   r   rZ   r   r   Ú<module>r]      s    ğİ "ß "Ñ "Û Û ÷Kò Kr   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__pycache__\__init__.cpython-312.pyc ==== 
-Ë
-    +İi    ã                    ó   — y )N© r   ó    úPC:\Users\katha\historical-drift-analyzer\src\core\ingestion\metadata\__init__.pyÚ<module>r      s   ñr   .
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\i_pdf_parser.py ==== 
-# src/core/ingestion/interfaces/i_pdf_parser.py
-from __future__ import annotations
-from abc import ABC, abstractmethod
-from typing import Dict, Any
-
-
-class IPdfParser(ABC):
-    """Interface for all local PDF parsers."""
-
-    @abstractmethod
-    def parse(self, pdf_path: str) -> Dict[str, Any]:
-        """
-        Parse a PDF file and return structured output.
-        """
-        raise NotImplementedError
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\ocr_wrapper.py ==== 
-# ======================================================================
-# OCR Wrapper (PaddleOCR-based)
-# Provides local, portable text recognition from scanned PDFs or image pages
-# ======================================================================
-
-from __future__ import annotations
-import logging
-import warnings
-from pathlib import Path
-from typing import Dict, Any, Optional
-
-# ======================================================================
-# Safe Imports
-# ======================================================================
-
-# --- PyMuPDF (fitz) import ---
-try:
-    import fitz  # Standard alias for PyMuPDF
-except ModuleNotFoundError as e:
-    raise ImportError(
-        "PyMuPDF (fitz) is not installed or misconfigured. "
-        "Install it via Poetry: poetry add pymupdf"
-    ) from e
-
-# --- PaddleOCR import ---
-try:
-    from paddleocr import PaddleOCR
-except ModuleNotFoundError as e:
-    raise ImportError(
-        "PaddleOCR is missing. Install it via Poetry: poetry add paddleocr"
-    ) from e
-
-
-# ======================================================================
-# OCR Wrapper Class
-# ======================================================================
-
-class OcrWrapper:
-    """
-    Local OCR engine using PaddleOCR for fully offline text extraction.
-
-    Automatically detects CPU/GPU mode â€” no explicit flags required.
-    """
-
-    def __init__(
-        self,
-        lang: str = "en",
-        use_textline_orientation: bool = True,
-        logger: Optional[logging.Logger] = None,
-    ) -> None:
-        """
-        Initialize the OCR engine.
-
-        Args:
-            lang: Language code (e.g., 'en', 'de', or 'en+de').
-            use_textline_orientation: Enables automatic rotation correction.
-            logger: Optional logger for structured pipeline logging.
-        """
-        self.lang = lang
-        self.logger = logger or logging.getLogger(__name__)
-
-        try:
-            # PaddleOCR >= 3.3.x: only these parameters are accepted
-            self.ocr_engine = PaddleOCR(
-                lang=self.lang,
-                use_textline_orientation=use_textline_orientation,
-            )
-        except TypeError as e:
-            # Handle older or experimental versions gracefully
-            if "use_textline_orientation" in str(e):
-                warnings.warn(
-                    "Falling back to legacy argument set for older PaddleOCR.",
-                    RuntimeWarning,
-                )
-                self.ocr_engine = PaddleOCR(lang=self.lang)
-            else:
-                raise
-
-        self.logger.info(f"Initialized PaddleOCR (lang={self.lang})")
-
-    # ------------------------------------------------------------------
-    def parse(self, pdf_path: str) -> Dict[str, Any]:
-        """
-        Extract text from an image-based PDF using PaddleOCR.
-
-        Args:
-            pdf_path: Absolute path to the PDF file.
-
-        Returns:
-            Dict[str, Any] with combined text, page data, and metadata.
-        """
-        path = Path(pdf_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {pdf_path}")
-
-        doc = fitz.open(str(path))
-        full_text: list[str] = []
-        page_results: list[dict[str, Any]] = []
-
-        for page_index in range(doc.page_count):
-            page = doc.load_page(page_index)
-            pix = page.get_pixmap(dpi=200)
-            img_bytes = pix.tobytes("png")
-
-            ocr_result = self.ocr_engine.ocr(img_bytes)
-            text_content = self._extract_text(ocr_result)
-            full_text.append(text_content)
-            page_results.append(
-                {
-                    "page": page_index + 1,
-                    "text": text_content,
-                    "ocr_boxes": ocr_result,
-                }
-            )
-
-        metadata = {
-            "source_file": path.name,
-            "page_count": doc.page_count,
-            "ocr_engine": "paddleocr",
-            "language": self.lang,
-        }
-
-        return {
-            "text": "\n".join(full_text).strip(),
-            "pages": page_results,
-            "metadata": metadata,
-        }
-
-    # ------------------------------------------------------------------
-    def _extract_text(self, ocr_result) -> str:
-        """
-        Convert PaddleOCR structured results into readable plain text.
-        """
-        lines: list[str] = []
-        for page in ocr_result:
-            for region in page:
-                if len(region) >= 2:
-                    text = region[1][0]
-                    if text:
-                        lines.append(text.strip())
-        return "\n".join(lines)
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\parser_factory.py ==== 
-from __future__ import annotations
-from typing import Dict, Any, Optional
-import logging
-
-from src.core.ingestion.parser.pymupdf_parser import PyMuPDFParser
-from src.core.ingestion.parser.pdfminer_parser import PdfMinerParser
-from src.core.ingestion.parser.ocr_wrapper import OcrWrapper
-
-
-class ParserFactory:
-    """Factory for selecting the optimal PDF parser based on configuration."""
-
-    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None):
-        self.config = config
-        self.logger = logger or logging.getLogger(__name__)
-
-        opts = config.get("options", {})
-        self.parser_mode = opts.get("pdf_parser", "auto").lower()
-        self.enable_ocr = bool(opts.get("enable_ocr", False))
-        self.ocr_settings = opts.get("ocr", {})
-        self.language = opts.get("language", "auto")
-
-    def create_parser(self):
-        """Create the appropriate parser instance."""
-        if self.parser_mode == "fitz":
-            return PyMuPDFParser()
-        elif self.parser_mode == "pdfminer":
-            return PdfMinerParser()
-        elif self.parser_mode == "auto":
-            return self._auto_select_parser()
-        else:
-            raise ValueError(f"Unknown parser mode: {self.parser_mode}")
-
-    def _auto_select_parser(self):
-        """Auto mode: try PyMuPDF, fallback to PdfMiner."""
-        try:
-            self.logger.debug("Attempting PyMuPDF parser (auto mode)")
-            return PyMuPDFParser()
-        except Exception as e:
-            self.logger.warning(f"PyMuPDF unavailable â†’ falling back to PdfMiner: {e}")
-            return PdfMinerParser()
-
-    def create_ocr(self) -> Optional[OcrWrapper]:
-        """Create OCR wrapper only if enabled in config."""
-        if not self.enable_ocr:
-            return None
-
-        tesseract_cmd = self.ocr_settings.get("tesseract_cmd")
-        lang = self.ocr_settings.get("lang", "eng")
-        psm = self.ocr_settings.get("psm", 3)
-
-        self.logger.info(f"OCR enabled (lang={lang}, cmd={tesseract_cmd or 'PATH'})")
-        return OcrWrapper(lang=lang, tesseract_cmd=tesseract_cmd, psm=psm)
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\pdfminer_parser.py ==== 
-# Pure-Python fallback parser for PDFs without text layer
-from __future__ import annotations
-from typing import Dict, Any
-from pathlib import Path
-from io import StringIO
-
-from pdfminer.high_level import extract_text_to_fp
-from pdfminer.layout import LAParams
-
-from src.core.ingestion.parser.i_pdf_parser import IPdfParser
-
-
-class PdfMinerParser(IPdfParser):
-    """Fallback PDF parser using pdfminer.six (no OCR, pure text)."""
-
-    def parse(self, pdf_path: str) -> Dict[str, Any]:
-        pdf_path = Path(pdf_path)
-        if not pdf_path.exists():
-            raise FileNotFoundError(f"File not found: {pdf_path}")
-
-        output = StringIO()
-        laparams = LAParams(line_margin=0.2, char_margin=1.0, word_margin=0.1)
-
-        try:
-            with open(pdf_path, "rb") as f:
-                extract_text_to_fp(f, output, laparams=laparams)
-        except Exception as e:
-            raise RuntimeError(f"PDFMiner failed to parse {pdf_path}: {e}")
-
-        text = output.getvalue()
-        meta = {
-            "title": None,
-            "author": None,
-            "subject": None,
-            "keywords": None,
-        }
-
-        return {
-            "text": text,
-            "metadata": meta,
-            "page_count": None,  # pdfminer doesn't expose this directly
-            "has_text_layer": bool(text.strip()),
-        }
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\pymupdf_parser.py ==== 
-# Local PyMuPDF-based PDF parser implementation
-from __future__ import annotations
-from typing import Dict, Any
-from pathlib import Path
-import fitz  # PyMuPDF
-
-from src.core.ingestion.parser.i_pdf_parser import IPdfParser
-
-
-class PyMuPDFParser(IPdfParser):
-    """High-performance PDF parser using PyMuPDF (fitz)."""
-
-    def parse(self, pdf_path: str) -> Dict[str, Any]:
-        pdf_path = Path(pdf_path)
-        if not pdf_path.exists():
-            raise FileNotFoundError(f"File not found: {pdf_path}")
-
-        text_parts: list[str] = []
-        has_text_layer = False
-
-        with fitz.open(pdf_path) as doc:
-            for page in doc:
-                page_text = page.get_text("text")
-                if page_text.strip():
-                    has_text_layer = True
-                text_parts.append(page_text)
-
-            text = "\n".join(text_parts)
-            meta = {
-                "title": (doc.metadata.get("title") or "").strip() or None,
-                "author": (doc.metadata.get("author") or "").strip() or None,
-                "subject": (doc.metadata.get("subject") or "").strip() or None,
-                "keywords": (doc.metadata.get("keywords") or "").strip() or None,
-            }
-
-            return {
-                "text": text,
-                "metadata": meta,
-                "page_count": doc.page_count,
-                "has_text_layer": has_text_layer,
-            }
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\parser\__init__.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\utils\file_utils.py ==== 
-# src/core/ingestion/utils/file_utils.py
-from __future__ import annotations
-from pathlib import Path
-
-
-def ensure_dir(path: Path):
-    """Create directory if it doesn't exist."""
-    path.mkdir(parents=True, exist_ok=True)
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\utils\language_detector.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\utils\performance_timer.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\utils\__init__.py ==== 
-.
-==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\__pycache__\__init__.cpython-312.pyc ==== 
-Ë
-    {-i    ã                    ó   — y )N© r   ó    úGC:\Users\katha\historical-drift-analyzer\src\core\ingestion\__init__.pyÚ<module>r      s   ñr   .
