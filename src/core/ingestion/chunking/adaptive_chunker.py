@@ -84,8 +84,8 @@ class AdaptiveChunker(IChunker):
                 if current_chunk:  # Prevent empty chunks
                     chunks.append({
                         "text": current_chunk.strip(),
-                        "chunk_size": len(current_chunk.strip()),  # Add the chunk size
-                        "overlap": self.overlap  # Add overlap value
+                        # "chunk_size": len(current_chunk.strip()),  # Removed from output
+                        # "overlap": self.overlap  # Removed from output
                     })
                 current_chunk = sentence
             else:
@@ -100,8 +100,8 @@ class AdaptiveChunker(IChunker):
         if current_chunk:
             chunks.append({
                 "text": current_chunk.strip(),
-                "chunk_size": len(current_chunk.strip()),
-                "overlap": self.overlap
+                # "chunk_size": len(current_chunk.strip()),  # Removed from output
+                # "overlap": self.overlap  # Removed from output
             })
 
         return chunks

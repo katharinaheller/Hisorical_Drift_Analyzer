@@ -1,0 +1,409 @@
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\all_cleaner_files.txt ==== 
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\all_cleaner_files.txt ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\base_cleaner.py ==== 
+from __future__ import annotations
+from typing import final
+from src.core.ingestion.cleaner.i_text_cleaner import ITextCleaner
+
+
+class BaseTextCleaner(ITextCleaner):
+    """Base class providing a stable clean(...) interface."""
+
+    @final
+    def clean(self, text: str) -> str:
+        # Guarantee non-null string
+        if not text:
+            return ""
+        return self._clean_impl(text)
+
+    def _clean_impl(self, text: str) -> str:
+        # Must be implemented by subclasses
+        raise NotImplementedError
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\cleaner_orchestrator.py ==== 
+from __future__ import annotations
+import json
+import logging
+from pathlib import Path
+from typing import Any, Dict
+
+from src.core.ingestion.config_loader import ConfigLoader
+from src.core.ingestion.utils.file_utils import ensure_dir
+from src.core.ingestion.cleaner.rag_text_cleaner import RagTextCleaner
+
+
+def main() -> None:
+    # ------------------------------------------------------------------
+    # 1. Load configuration
+    # ------------------------------------------------------------------
+    cfg = ConfigLoader("configs/ingestion.yaml").config
+    opts: Dict[str, Any] = cfg.get("options", {})
+    log_level = getattr(logging, opts.get("log_level", "INFO").upper(), logging.INFO)
+
+    logging.basicConfig(level=log_level, format="%(levelname)s | %(message)s")
+    logger = logging.getLogger("CleanerOrchestrator")
+    logger.info("Starting cleaning phase")
+
+    # ------------------------------------------------------------------
+    # 2. Resolve paths
+    # ------------------------------------------------------------------
+    parsed_dir = Path(cfg["paths"]["parsed"]).resolve()
+    cleaned_dir = Path(cfg["paths"].get("cleaned", "data/processed/cleaned")).resolve()
+    ensure_dir(cleaned_dir)
+
+    parsed_files = sorted(parsed_dir.glob("*.parsed.json"))
+    if not parsed_files:
+        logger.warning(f"No parsed files found in {parsed_dir}")
+        return
+
+    logger.info(f"Found {len(parsed_files)} parsed file(s) for cleaning")
+
+    # ------------------------------------------------------------------
+    # 3. Initialize deterministic multi-stage cleaner
+    # ------------------------------------------------------------------
+    cleaner = RagTextCleaner.default()
+
+    # ------------------------------------------------------------------
+    # 4. Iterate over parsed JSONs
+    # ------------------------------------------------------------------
+    for idx, parsed_path in enumerate(parsed_files, start=1):
+        try:
+            with open(parsed_path, "r", encoding="utf-8") as f:
+                parsed_data = json.load(f)
+
+            raw_text = parsed_data.get("text", "")
+            if not raw_text:
+                logger.warning(f"Skipping {parsed_path.name}: no text field")
+                continue
+
+            # --- Step 1: Clean text ---
+            cleaned_text = cleaner.clean(raw_text)
+
+            # --- Step 2: Write cleaned output as JSON ---
+            cleaned_filename = parsed_path.stem.replace(".parsed", "") + ".cleaned.json"
+            cleaned_path = cleaned_dir / cleaned_filename
+
+            cleaned_data = {
+                "cleaned_text": cleaned_text,
+            }
+
+            with open(cleaned_path, "w", encoding="utf-8") as cf:
+                json.dump(cleaned_data, cf, ensure_ascii=False, indent=2)
+
+            logger.info(f"âœ“ Cleaned {parsed_path.name} ({idx}/{len(parsed_files)})")
+
+        except Exception as e:
+            logger.error(f"âœ— Failed to clean {parsed_path.name}: {e}")
+
+    # ------------------------------------------------------------------
+    # 5. Finish
+    # ------------------------------------------------------------------
+    logger.info("Cleaning phase completed successfully.")
+
+
+if __name__ == "__main__":
+    main()
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\i_text_cleaner.py ==== 
+from __future__ import annotations
+from abc import ABC, abstractmethod
+
+
+class ITextCleaner(ABC):
+    """Interface for all text cleaners in the ingestion pipeline."""
+
+    @abstractmethod
+    def clean(self, text: str) -> str:
+        """Return a cleaned version of the given text."""
+        raise NotImplementedError
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rag_text_cleaner.py ==== 
+from __future__ import annotations
+from typing import List
+from src.core.ingestion.cleaner.i_text_cleaner import ITextCleaner
+from src.core.ingestion.cleaner.simple_cleaners import (
+    UnicodeNormalizer,
+    SoftHyphenCleaner,
+    HeaderFooterCleaner,
+    LayoutLineJoinCleaner,
+    TrailingWhitespaceCleaner,
+    HTMLCleaner,                 # removes HTML tags and entities
+    ScientificNotationCleaner,   # removes scientific notation terms like "Eq. 1"
+    ReferencesCleaner,           # removes everything after 'References' or 'Bibliography'
+)
+
+
+class RagTextCleaner(ITextCleaner):
+    """
+    Composite text cleaner for RAG ingestion.
+    Executes a deterministic sequence of cleaners to normalize text.
+    """
+
+    def __init__(self, cleaners: List[ITextCleaner]):
+        self.cleaners = cleaners
+
+    @classmethod
+    def default(cls) -> "RagTextCleaner":
+        # Define deterministic order of all sub-cleaners
+        cleaners: List[ITextCleaner] = [
+            UnicodeNormalizer(),        # normalize spaces and zero-width chars
+            SoftHyphenCleaner(),        # remove soft hyphens and join split words
+            HeaderFooterCleaner(),      # drop obvious headers, footers, and funding info
+            LayoutLineJoinCleaner(),    # repair broken layout lines
+            TrailingWhitespaceCleaner(),# trim trailing spaces and redundant newlines
+            HTMLCleaner(),              # remove HTML tags and entities
+            ScientificNotationCleaner(),# remove equations, theorems, lemma markers
+            ReferencesCleaner(),        # remove literature/references section at end
+        ]
+        return cls(cleaners)
+
+    def clean(self, text: str) -> str:
+        # Run all cleaners consecutively in deterministic order
+        for cleaner in self.cleaners:
+            text = cleaner.clean(text)
+        return text
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rules.py ==== 
+# src/core/ingestion/cleaner/rules.py
+from __future__ import annotations
+import re
+
+# Common residual headings we want to drop only if they appear alone in a line
+SINGLE_LINE_HEADER_PATTERNS = [
+    r"(?i)^\s*table\s+of\s+contents\s*$",
+    r"(?i)^\s*inhaltsverzeichnis\s*$",
+    r"(?i)^\s*contents\s*$",
+]
+
+# Footer / page indicator
+FOOTER_PATTERNS = [
+    r"(?i)^\s*page\s+\d+\s*$",
+    r"(?i)^\s*p\.?\s*\d+\s*$",
+    r"^\s*\d+\s*$",
+]
+
+# Funding and preprint noise â€“ but only if line is short
+FUNDING_PATTERNS = [
+    r"(?i)^\s*funded\s+by.*$",
+    r"(?i)^\s*supported\s+by.*$",
+    r"(?i)^\s*this\s+preprint\s+.*$",
+    r"(?i)^\s*arxiv:\s*\d{4}\.\d{4,5}.*$",
+    r"(?i)^\s*doi:\s*10\.\d{4,9}/[-._;()/:A-Z0-9]+$",
+]
+
+# Lines we consider layout trash if they are too short
+MAX_LEN_FOR_STRICT_DROP = 80
+
+SOFT_HYPHEN = "\xad"
+SOFT_HYPHEN_RE = re.compile(SOFT_HYPHEN)
+
+# Hyphenated line break like "prob-\nabilistic"
+HYPHEN_LINEBREAK_RE = re.compile(r"(\w+)-\n(\w+)")
+
+# Linebreak in the middle of sentence like "proba-\nbilistic"
+INLINE_LINEBREAK_RE = re.compile(r"(\S)\n(\S)")
+
+# Multiple blank lines
+MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
+
+# Unicode spaces
+UNICODE_SPACES_RE = re.compile(r"[\u00a0\u2000-\u200b]+")
+
+
+def is_short_line(line: str) -> bool:
+    # Heuristic: many layout lines are short
+    return len(line.strip()) <= MAX_LEN_FOR_STRICT_DROP
+
+
+def match_any(patterns: list[str], line: str) -> bool:
+    for pat in patterns:
+        if re.match(pat, line):
+            return True
+    return False
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\simple_cleaners.py ==== 
+from __future__ import annotations
+import re
+from typing import List
+from src.core.ingestion.cleaner.base_cleaner import BaseTextCleaner
+from src.core.ingestion.cleaner import rules
+
+
+class HTMLCleaner(BaseTextCleaner):
+    """Removes HTML tags and entities like &nbsp;."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Remove all HTML tags
+        text = re.sub(r'<.*?>', '', text)
+        # Remove HTML entities like &nbsp;
+        text = re.sub(r'&[a-zA-Z]+;', '', text)
+        return text
+
+
+class ScientificNotationCleaner(BaseTextCleaner):
+    """Removes scientific notations and references like 'Eq. 1', 'Theorem 3'."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Remove scientific format like 'Eq. 1', 'Theorem 2'
+        text = re.sub(r'\b(Eq|Theorem|Lemma)\s+\d+\b', '', text)
+        return text
+
+
+class UnicodeNormalizer(BaseTextCleaner):
+    """Normalize unicode spaces and zero-width chars."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Replace unicode spaces by normal space
+        text = rules.UNICODE_SPACES_RE.sub(" ", text)
+        return text
+
+
+class SoftHyphenCleaner(BaseTextCleaner):
+    """Remove soft hyphens and join line-broken words."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Remove soft hyphen character
+        text = text.replace(rules.SOFT_HYPHEN, "")
+        # Join hyphenated line breaks
+        text = rules.HYPHEN_LINEBREAK_RE.sub(r"\1\2", text)
+        return text
+
+
+class LayoutLineJoinCleaner(BaseTextCleaner):
+    """
+    Join lines that were broken by the PDF layout but belong together.
+    We do this conservatively: only if both sides are non-space.
+    """
+
+    def _clean_impl(self, text: str) -> str:
+        # Join inline linebreaks like "probabilistic\nreasoning" -> "probabilistic reasoning"
+        text = rules.INLINE_LINEBREAK_RE.sub(r"\1 \2", text)
+        # Collapse too many blank lines
+        text = rules.MULTI_NEWLINE_RE.sub("\n\n", text)
+        return text.strip()
+
+
+class HeaderFooterCleaner(BaseTextCleaner):
+    """Remove obvious header/footer/single-line noise."""
+
+    def _clean_impl(self, text: str) -> str:
+        cleaned_lines: List[str] = []
+        for line in text.splitlines():
+            raw = line.rstrip()
+
+            # Drop header-like lines
+            if rules.match_any(rules.SINGLE_LINE_HEADER_PATTERNS, raw):
+                continue
+
+            # Drop footer-like things only if short
+            if rules.match_any(rules.FOOTER_PATTERNS, raw) and rules.is_short_line(raw):
+                continue
+
+            # Drop funding/preprint if short
+            if rules.match_any(rules.FUNDING_PATTERNS, raw) and rules.is_short_line(raw):
+                continue
+
+            cleaned_lines.append(raw)
+
+        return "\n".join(cleaned_lines).strip()
+
+
+class TrailingWhitespaceCleaner(BaseTextCleaner):
+    """Normalize whitespace globally."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Strip each line
+        lines = [ln.rstrip() for ln in text.splitlines()]
+        text = "\n".join(lines)
+        # Final collapse of multiple newlines
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+
+class ReferencesCleaner(BaseTextCleaner):
+    """Removes everything starting from 'References', 'Bibliography', or 'Literaturverzeichnis' sections."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Pattern for reference section headers (case-insensitive)
+        pattern = re.compile(
+            r"(?im)^\s*(references|bibliography|literaturverzeichnis)\s*$"
+        )
+        match = pattern.search(text)
+        if match:
+            # Cut everything from the start of the reference section
+            cutoff_index = match.start()
+            # Only cut if it occurs after the first 20% of the document to avoid false positives
+            if cutoff_index > len(text) * 0.2:
+                text = text[:cutoff_index]
+        return text.strip()
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__init__.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\base_cleaner.cpython-312.pyc ==== 
+Ë
+    ªøi  ã                  ó>   — d dl mZ d dlmZ d dlmZ  G d„ de«      Zy)é    )Úannotations)Úfinal)ÚITextCleanerc                  ó*   — e Zd ZdZedd„«       Zdd„Zy)ÚBaseTextCleanerz3Base class providing a stable clean(...) interface.c                ó*   — |sy| j                  |«      S )NÚ )Ú_clean_impl©ÚselfÚtexts     úSC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\base_cleaner.pyÚcleanzBaseTextCleaner.clean	   s   € ñ ØØ×Ñ Ó%Ğ%ó    c                ó   — t         ‚)N)ÚNotImplementedErrorr   s     r   r
+   zBaseTextCleaner._clean_impl   s   € ä!Ğ!r   N)r   ÚstrÚreturnr   )Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r   r   r
+   © r   r   r   r      s   „ Ù=à
+ò&ó ğ&ô"r   r   N)Ú
+__future__r   Útypingr   Ú)src.core.ingestion.cleaner.i_text_cleanerr   r   r   r   r   Ú<module>r      s   ğİ "İ İ Bô"lõ "r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\i_text_cleaner.cpython-312.pyc ==== 
+Ë
+    øiJ  ã                  ó6   — d dl mZ d dlmZmZ  G d„ de«      Zy)é    )Úannotations)ÚABCÚabstractmethodc                  ó"   — e Zd ZdZedd„«       Zy)ÚITextCleanerz:Interface for all text cleaners in the ingestion pipeline.c                ó   — t         ‚)z+Return a cleaned version of the given text.)ÚNotImplementedError)ÚselfÚtexts     úUC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\i_text_cleaner.pyÚcleanzITextCleaner.clean   s
+   € ô "Ğ!ó    N)r   ÚstrÚreturnr   )Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r   r   © r   r   r   r      s   „ ÙDàò"ó ñ"r   r   N)Ú
+__future__r   Úabcr   r   r   r   r   r   Ú<module>r      s   ğİ "ß #ô"3õ "r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\rag_text_cleaner.cpython-312.pyc ==== 
+Ë
+    ş½in  ã                  óf   — d dl mZ d dlmZ d dlmZ d dlmZmZm	Z	m
+Z
+mZmZmZmZ  G d„ de«      Zy)é    )Úannotations)ÚList)ÚITextCleaner©ÚUnicodeNormalizerÚSoftHyphenCleanerÚHeaderFooterCleanerÚLayoutLineJoinCleanerÚTrailingWhitespaceCleanerÚHTMLCleanerÚScientificNotationCleanerÚReferencesCleanerc                  ó2   — e Zd ZdZdd„Zedd„«       Zdd„Zy)	ÚRagTextCleanerzx
+    Composite text cleaner for RAG ingestion.
+    Executes a deterministic sequence of cleaners to normalize text.
+    c                ó   — || _         y ©N)Úcleaners)Úselfr   s     úWC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rag_text_cleaner.pyÚ__init__zRagTextCleaner.__init__   s	   € Ø ˆó    c           	     ó¦   — t        «       t        «       t        «       t        «       t	        «       t        «       t        «       t        «       g} | |«      S r   r   )Úclsr   s     r   ÚdefaultzRagTextCleaner.default   sF   € ô ÓÜÓÜÓ!Ü!Ó#Ü%Ó'Ü‹MÜ%Ó'ÜÓğ	(
+ˆñ 8‹}Ğr   c                óJ   — | j                   D ]  }|j                  |«      }Œ |S r   )r   Úclean)r   ÚtextÚcleaners      r   r   zRagTextCleaner.clean(   s#   € à—}”}ˆGØ—=‘= Ó&‰Dğ %àˆr   N)r   zList[ITextCleaner])Úreturnz'RagTextCleaner')r   Ústrr   r    )Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r   Úclassmethodr   r   © r   r   r   r      s%   „ ñó
+!ğ òó ğôr   r   N)Ú
+__future__r   Útypingr   Ú)src.core.ingestion.cleaner.i_text_cleanerr   Ú*src.core.ingestion.cleaner.simple_cleanersr   r   r	   r
+   r   r   r   r   r   r&   r   r   Ú<module>r+      s)   ğİ "İ İ B÷	÷ 	ó 	ô\õ r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\rules.cpython-312.pyc ==== 
+Ë
+    Úøi%  ã                  óü   — d dl mZ d dlZg d¢Zg d¢Zg d¢ZdZdZ ej                  e«      Z	 ej                  d«      Z
+ ej                  d	«      Z ej                  d
+«      Z ej                  d«      Zdd„Zdd„Zy)é    )ÚannotationsN)z!(?i)^\s*table\s+of\s+contents\s*$z(?i)^\s*inhaltsverzeichnis\s*$z(?i)^\s*contents\s*$)z(?i)^\s*page\s+\d+\s*$z(?i)^\s*p\.?\s*\d+\s*$z^\s*\d+\s*$)z(?i)^\s*funded\s+by.*$z(?i)^\s*supported\s+by.*$z(?i)^\s*this\s+preprint\s+.*$z"(?i)^\s*arxiv:\s*\d{4}\.\d{4,5}.*$z-(?i)^\s*doi:\s*10\.\d{4,9}/[-._;()/:A-Z0-9]+$éP   ô   Â­z(\w+)-\n(\w+)z
+(\S)\n(\S)z\n{3,}z[\u00a0\u2000-\u200b]+c                óB   — t        | j                  «       «      t        k  S )N)ÚlenÚstripÚMAX_LEN_FOR_STRICT_DROP)Úlines    úLC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\rules.pyÚis_short_liner   /   s   € äˆtz‰z‹|ÓÔ 7Ñ7Ğ7ó    c                óB   — | D ]  }t        j                  ||«      sŒ y y)NTF)ÚreÚmatch)Úpatternsr
+   Úpats      r   Ú	match_anyr   4   s"   € ÛˆÜ8‰8C˜ÕÙğ ğ r   )r
+   ÚstrÚreturnÚbool)r   z	list[str]r
+   r   r   r   )Ú
+__future__r   r   ÚSINGLE_LINE_HEADER_PATTERNSÚFOOTER_PATTERNSÚFUNDING_PATTERNSr	   ÚSOFT_HYPHENÚcompileÚSOFT_HYPHEN_REÚHYPHEN_LINEBREAK_REÚINLINE_LINEBREAK_REÚMULTI_NEWLINE_REÚUNICODE_SPACES_REr   r   © r   r   Ú<module>r#      s—   ğå "Û 	òĞ ò€òĞ ğ Ğ à€Ø—‘˜KÓ(€ğ !b—j‘jĞ!1Ó2Ğ ğ !b—j‘j Ó/Ğ ğ 2—:‘:˜iÓ(Ğ ğ B—J‘JĞ8Ó9Ğ ó8ô
+r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\simple_cleaners.cpython-312.pyc ==== 
+Ë
+    í½iÉ  ã                  óì   — d dl mZ d dlZd dlmZ d dlmZ d dlmZ  G d„ de«      Z	 G d„ d	e«      Z
+ G d
+„ de«      Z G d„ de«      Z G d„ de«      Z G d„ de«      Z G d„ de«      Z G d„ de«      Zy)é    )ÚannotationsN)ÚList)ÚBaseTextCleaner)Úrulesc                  ó   — e Zd ZdZdd„Zy)ÚHTMLCleanerz+Removes HTML tags and entities like &nbsp;.c                ób   — t        j                  dd|«      }t        j                  dd|«      }|S )Nz<.*?>Ú z&[a-zA-Z]+;©ÚreÚsub©ÚselfÚtexts     úVC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\simple_cleaners.pyÚ_clean_implzHTMLCleaner._clean_impl   s+   € äv‰vh  DÓ)ˆäv‰vn b¨$Ó/ˆØˆó    N©r   ÚstrÚreturnr   ©Ú__name__Ú
+__module__Ú__qualname__Ú__doc__r   © r   r   r   r      s
+   „ Ù5ôr   r   c                  ó   — e Zd ZdZdd„Zy)ÚScientificNotationCleanerzFRemoves scientific notations and references like 'Eq. 1', 'Theorem 3'.c                ó4   — t        j                  dd|«      }|S )Nz\b(Eq|Theorem|Lemma)\s+\d+\br
+   r   r   s     r   r   z%ScientificNotationCleaner._clean_impl   s   € äv‰vĞ5°r¸4Ó@ˆØˆr   Nr   r   r   r   r   r   r      s
+   „ ÙPôr   r   c                  ó   — e Zd ZdZdd„Zy)ÚUnicodeNormalizerz.Normalize unicode spaces and zero-width chars.c                óF   — t         j                  j                  d|«      }|S )NÚ )r   ÚUNICODE_SPACES_REr   r   s     r   r   zUnicodeNormalizer._clean_impl   s   € ä×&Ñ&×*Ñ*¨3°Ó5ˆØˆr   Nr   r   r   r   r   r!   r!      s
+   „ Ù8ôr   r!   c                  ó   — e Zd ZdZdd„Zy)ÚSoftHyphenCleanerz/Remove soft hyphens and join line-broken words.c                ó†   — |j                  t        j                  d«      }t        j                  j	                  d|«      }|S )Nr
+   z\1\2)Úreplacer   ÚSOFT_HYPHENÚHYPHEN_LINEBREAK_REr   r   s     r   r   zSoftHyphenCleaner._clean_impl(   s5   € à|‰|œE×-Ñ-¨rÓ2ˆä×(Ñ(×,Ñ,¨W°dÓ;ˆØˆr   Nr   r   r   r   r   r&   r&   %   s
+   „ Ù9ôr   r&   c                  ó   — e Zd ZdZdd„Zy)ÚLayoutLineJoinCleanerz
+    Join lines that were broken by the PDF layout but belong together.
+    We do this conservatively: only if both sides are non-space.
+    c                ó¢   — t         j                  j                  d|«      }t         j                  j                  d|«      }|j	                  «       S )Nz\1 \2ú
+
+)r   ÚINLINE_LINEBREAK_REr   ÚMULTI_NEWLINE_REÚstripr   s     r   r   z!LayoutLineJoinCleaner._clean_impl6   s>   € ä×(Ñ(×,Ñ,¨X°tÓ<ˆä×%Ñ%×)Ñ)¨&°$Ó7ˆØz‰z‹|Ğr   Nr   r   r   r   r   r,   r,   0   s   „ ñô
+r   r,   c                  ó   — e Zd ZdZdd„Zy)ÚHeaderFooterCleanerz/Remove obvious header/footer/single-line noise.c                óâ  — g }|j                  «       D ]¼  }|j                  «       }t        j                  t        j                  |«      rŒ8t        j                  t        j
+                  |«      rt        j                  |«      rŒrt        j                  t        j                  |«      rt        j                  |«      rŒ¬|j                  |«       Œ¾ dj                  |«      j                  «       S )NÚ
+)Ú
+splitlinesÚrstripr   Ú	match_anyÚSINGLE_LINE_HEADER_PATTERNSÚFOOTER_PATTERNSÚis_short_lineÚFUNDING_PATTERNSÚappendÚjoinr1   )r   r   Úcleaned_linesÚlineÚraws        r   r   zHeaderFooterCleaner._clean_implA   s²   € Ø#%ˆØ—O‘OÖ%ˆDØ—+‘+“-ˆCô ‰œu×@Ñ@À#ÔFØô ‰œu×4Ñ4°cÔ:¼u×?RÑ?RĞSVÔ?WØô ‰œu×5Ñ5°sÔ;Ä×@SÑ@SĞTWÔ@XØà× Ñ  Õ%ğ &ğ" y‰y˜Ó'×-Ñ-Ó/Ğ/r   Nr   r   r   r   r   r3   r3   >   s
+   „ Ù9ô0r   r3   c                  ó   — e Zd ZdZdd„Zy)ÚTrailingWhitespaceCleanerzNormalize whitespace globally.c                óÒ   — |j                  «       D cg c]  }|j                  «       ‘Œ }}dj                  |«      }t        j                  dd|«      }|j                  «       S c c}w )Nr5   z\n{3,}r.   )r6   r7   r>   r   r   r1   )r   r   ÚlnÚliness       r   r   z%TrailingWhitespaceCleaner._clean_implZ   sV   € à'+§¡Ô'8Ó9Ñ'8 —‘•Ğ'8ˆĞ9Øy‰y˜Óˆäv‰vi ¨Ó.ˆØz‰z‹|Ğùò	 :s   “A$Nr   r   r   r   r   rC   rC   W   s
+   „ Ù(ôr   rC   c                  ó   — e Zd ZdZdd„Zy)ÚReferencesCleanerzbRemoves everything starting from 'References', 'Bibliography', or 'Literaturverzeichnis' sections.c                ó¾   — t        j                  d«      }|j                  |«      }|r&|j                  «       }|t	        |«      dz  kD  r|d | }|j                  «       S )Nz;(?im)^\s*(references|bibliography|literaturverzeichnis)\s*$gš™™™™™É?)r   ÚcompileÚsearchÚstartÚlenr1   )r   r   ÚpatternÚmatchÚcutoff_indexs        r   r   zReferencesCleaner._clean_implf   sY   € ä—*‘*ØJó
+ˆğ —‘˜tÓ$ˆÙà Ÿ;™;›=ˆLàœc $›i¨#™oÒ-Ø˜M˜\Ğ*Øz‰z‹|Ğr   Nr   r   r   r   r   rH   rH   c   s
+   „ Ùlôr   rH   )Ú
+__future__r   r   Útypingr   Ú'src.core.ingestion.cleaner.base_cleanerr   Úsrc.core.ingestion.cleanerr   r   r   r!   r&   r,   r3   rC   rH   r   r   r   Ú<module>rU      st   ğİ "Û 	İ İ Cİ ,ô/ô ô ô ô˜ô ô˜ô ô˜Oô ô0˜/ô 0ô2	 ô 	ô˜õ r   .
+==== C:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__pycache__\__init__.cpython-312.pyc ==== 
+Ë
+    {-i    ã                    ó   — y )N© r   ó    úOC:\Users\katha\historical-drift-analyzer\src\core\ingestion\cleaner\__init__.pyÚ<module>r      s   ñr   .

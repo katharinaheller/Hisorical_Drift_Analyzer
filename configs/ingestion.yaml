@@ -8,8 +8,8 @@ paths:
   metadata: "${base_dir}/data/processed/metadata"
 
 options:
-  language: "auto"
-  pdf_parser: "fitz"
+  language: "aut"
+  pdf_parser: "fitz" #fitz
   parallelism: "auto"
   metadata_fields:
     - title

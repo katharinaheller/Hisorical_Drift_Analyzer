@@ -30,7 +30,6 @@ indexing:
     embedding_model: "all-MiniLM-L6-v2"  # local embedding model
     dimension: 384  # embedding vector dimension
     normalize_embeddings: true  # unit-norm embeddings
-    update_mode: "incremental"  # append new data without full rebuild
 
 # Retrieval phase configuration
 retrieval:

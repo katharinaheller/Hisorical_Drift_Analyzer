@@ -1,0 +1,13 @@
+options:
+  vector_store: "FAISS"           # supported: FAISS, LanceDB, SQLite
+  embedding_backend: "sentence-transformers"
+  embedding_model: "all-MiniLM-L6-v2"
+  dimension: 384                  # will be inferred if omitted
+  normalize_embeddings: true
+  batch_size: 16
+  log_level: "INFO"
+
+paths:
+  chunks_dir: "data/processed/chunks"
+  metadata_dir: "data/processed/metadata"
+  vector_store_dir: "data/vector_store"

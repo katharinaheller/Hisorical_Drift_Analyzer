@@ -1,0 +1,9 @@
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\embedding\embedding_orchestrator.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\embedding\__init__.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\embedding\interfaces\i_embedder.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\embedding\interfaces\__init__.py ==== 
+.

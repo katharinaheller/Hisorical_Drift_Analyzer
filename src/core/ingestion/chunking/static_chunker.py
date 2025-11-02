@@ -25,26 +25,29 @@ class StaticChunker(IChunker):
         sentences = [sent.text.strip() for sent in doc.sents]  # Extract sentences from the spaCy doc
 
         for sentence in sentences:
+            # Add sentence if it fits into the current chunk
             if len(current_chunk) + len(sentence) + 1 <= self.chunk_size:
                 current_chunk += ". " + sentence
             else:
                 chunks.append({
                     "text": current_chunk.strip(),
-                    "chunk_size": len(current_chunk.strip()),  # Add chunk size
-                    "overlap": self.overlap  # Add overlap value
+                    # "chunk_size": len(current_chunk.strip()),  # Removed from output
+                    # "overlap": self.overlap  # Removed from output
                 })
                 current_chunk = sentence  # Start a new chunk
 
+            # Merge small chunks if necessary
             if len(current_chunk) < self.min_chunk_length and chunks:
                 last_chunk = chunks[-1]
                 last_chunk["text"] += " " + current_chunk
                 current_chunk = ""
 
+        # Append any remaining text as the final chunk
         if current_chunk:
             chunks.append({
                 "text": current_chunk.strip(),
-                "chunk_size": len(current_chunk.strip()),  # Add chunk size
-                "overlap": self.overlap  # Add overlap value
+                # "chunk_size": len(current_chunk.strip()),  # Removed from output
+                # "overlap": self.overlap  # Removed from output
             })
 
         return chunks

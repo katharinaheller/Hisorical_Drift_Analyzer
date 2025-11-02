@@ -94,3 +94,21 @@ class TrailingWhitespaceCleaner(BaseTextCleaner):
         # Final collapse of multiple newlines
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
+
+
+class ReferencesCleaner(BaseTextCleaner):
+    """Removes everything starting from 'References', 'Bibliography', or 'Literaturverzeichnis' sections."""
+
+    def _clean_impl(self, text: str) -> str:
+        # Pattern for reference section headers (case-insensitive)
+        pattern = re.compile(
+            r"(?im)^\s*(references|bibliography|literaturverzeichnis)\s*$"
+        )
+        match = pattern.search(text)
+        if match:
+            # Cut everything from the start of the reference section
+            cutoff_index = match.start()
+            # Only cut if it occurs after the first 20% of the document to avoid false positives
+            if cutoff_index > len(text) * 0.2:
+                text = text[:cutoff_index]
+        return text.strip()

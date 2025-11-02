@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from src.core.ingestion.config_loader import ConfigLoader
+from src.core.config.config_loader import ConfigLoader
 from src.core.ingestion.utils.file_utils import ensure_dir
 from src.core.ingestion.parser.parser_factory import ParserFactory
 from src.core.ingestion.metadata.metadata_extractor_factory import MetadataExtractorFactory
