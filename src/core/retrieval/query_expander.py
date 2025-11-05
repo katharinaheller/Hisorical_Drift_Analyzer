@@ -1,50 +1,96 @@
+# src/core/retrieval/query_expander.py
 from __future__ import annotations
-import re
-from typing import List
+from typing import List, Tuple
+from dataclasses import dataclass
+import logging
 
-class TemporalQueryExpander:
-    """Generates temporally diverse query variants to improve historical coverage."""
+# Third-party, bewusst etablierte Bibliotheken
+from keybert import KeyBERT                            # # transformer-basierte Keyword-Extraktion
+from sentence_transformers import SentenceTransformer, util  # # Paraphrasen/Ähnlichkeit
 
-    def __init__(self):
-        # Static synonym sets for common AI terminology
-        self.synonym_map = {
-            "ai": ["artificial intelligence", "machine intelligence", "intelligent systems"],
-            "neural": ["connectionist", "perceptron", "deep learning"],
-            "algorithm": ["heuristic", "procedure", "rule-based system"],
-        }
+logger = logging.getLogger(__name__)
 
-        # Temporal cues for encouraging retrieval across decades
-        self.temporal_modifiers = [
-            "history of", "timeline of", "evolution of", "early developments in",
-            "recent trends in", "origins of", "milestones in", "historical overview of"
+
+@dataclass
+class HybridQueryExpanderConfig:
+    # # Modellnamen sind bewusst konservativ und lokal verfügbar
+    kw_model_name: str = "all-MiniLM-L6-v2"            # # für KeyBERT
+    paraphrase_model_name: str = "paraphrase-MiniLM-L6-v2"  # # für Paraphrasen
+    top_n_keywords: int = 5                            # # Anzahl semantischer Keywords
+    num_paraphrases: int = 5                           # # Anzahl Paraphrasen aus Templates
+    mmr_diversity: float = 0.7                         # # Diversität für KeyBERT
+    max_total: int = 12                                # # Obergrenze der Gesamtvarianten inkl. Original
+    dedup_lower: bool = True                           # # Deduplizierung fallunabhängig
+
+
+class HybridQueryExpander:
+    """Adaptive Query-Expansion über KeyBERT (Keywords) + Sentence-Transformers (Paraphrasen)."""
+
+    def __init__(self, cfg: HybridQueryExpanderConfig | None = None):
+        self.cfg = cfg or HybridQueryExpanderConfig()
+        # # Modelle werden einmalig geladen und wiederverwendet
+        self.kw_model = KeyBERT(self.cfg.kw_model_name)                         # # Keyword-Extraktor
+        self.pp_model = SentenceTransformer(self.cfg.paraphrase_model_name)     # # Paraphrasen/Ähnlichkeit
+
+    # ------------------------------------------------------------------
+    def _expand_keywords(self, query: str) -> List[str]:
+        # # Transformer-basierte Schlüsselbegriffe (MMR für Diversität)
+        kw: List[Tuple[str, float]] = self.kw_model.extract_keywords(
+            query,
+            top_n=self.cfg.top_n_keywords,
+            use_mmr=True,
+            diversity=self.cfg.mmr_diversity
+        )
+        out: List[str] = []
+        for term, _ in kw:
+            # # Minimalistische, robuste Variantenbildung ohne Hardcoding von Themenlisten
+            out.append(f"{query} {term}")                 # # query + zentrales Semantikwort
+            out.append(f"{term}")                         # # reines Semantikwort als eigenständige Fokussierung
+        return out
+
+    # ------------------------------------------------------------------
+    def _expand_paraphrases(self, query: str) -> List[str]:
+        # # Schmale, generische Templates, die typisierte Perspektiven abdecken
+        templates = [
+            f"evolution of {query}",
+            f"historical perspective on {query}",
+            f"foundations of {query}",
+            f"modern view of {query}",
+            f"how {query} changed over time",
+            f"definition and background of {query}",
+            f"comparative view on {query}",
         ]
+        q_emb = self.pp_model.encode(query, convert_to_tensor=True)
+        t_emb = self.pp_model.encode(templates, convert_to_tensor=True)
+        sims = util.pytorch_cos_sim(q_emb, t_emb)[0]
+        idx = sims.argsort(descending=True)
+        return [templates[i] for i in idx[: self.cfg.num_paraphrases]]
 
     # ------------------------------------------------------------------
     def expand(self, query: str) -> List[str]:
-        """Return a small, meaningful set of semantically related and temporally expanded variants."""
-        q = query.strip()
-        q_lower = q.lower()
+        # # Original immer an Position 0
+        candidates: List[str] = [query]
 
-        expansions: List[str] = []
+        try:
+            candidates += self._expand_keywords(query)
+        except Exception as e:
+            logger.warning(f"KeyBERT expansion failed, continuing without keywords: {e}")
 
-        # Synonym substitution (single keyword replacements)
-        for key, syns in self.synonym_map.items():
-            if re.search(rf"\b{re.escape(key)}\b", q_lower):
-                for s in syns:
-                    variant = re.sub(rf"\b{re.escape(key)}\b", s, q_lower)
-                    expansions.append(variant)
+        try:
+            candidates += self._expand_paraphrases(query)
+        except Exception as e:
+            logger.warning(f"Paraphrase expansion failed, continuing without paraphrases: {e}")
 
-        # Temporal modifier combinations
-        for t in self.temporal_modifiers:
-            if not any(t in q_lower for t in self.temporal_modifiers):
-                expansions.append(f"{t} {q_lower}")
-
-        # Deduplicate while preserving order
+        # # Deduplizierung, stabil und deterministisch
         seen = set()
-        unique_exp = []
-        for e in expansions:
-            if e not in seen:
-                unique_exp.append(e)
-                seen.add(e)
+        out: List[str] = []
+        for c in candidates:
+            key = c.lower() if self.cfg.dedup_lower else c
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+            if len(out) >= self.cfg.max_total:
+                break
 
-        return unique_exp
+        return out

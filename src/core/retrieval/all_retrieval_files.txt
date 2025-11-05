@@ -1,0 +1,761 @@
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\all_retrieval_files.txt ==== 
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\all_retrieval_files.txt ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\faiss_retriever.py ==== 
+from __future__ import annotations
+from typing import Any, Dict, List, Optional
+from pathlib import Path
+import json
+import numpy as np
+import logging
+from src.core.retrieval.interfaces.i_retriever import IRetriever
+
+
+class FAISSRetriever(IRetriever):
+    """Semantic retriever using FAISS vector similarity search with optional cosine/dot mode."""
+
+    def __init__(
+        self,
+        vector_store_dir: str,
+        model_name: str,
+        top_k_retrieve: int = 50,        # broad initial search
+        normalize_embeddings: bool = True,
+        use_gpu: bool = False,
+        similarity_metric: str = "cosine",  # new parameter
+    ):
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        try:
+            import faiss
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            raise ImportError(
+                "faiss-cpu and sentence-transformers are required. "
+                "Install via: poetry add faiss-cpu sentence-transformers"
+            ) from e
+
+        self.faiss = faiss
+        self.vector_store_dir = Path(vector_store_dir).resolve()
+        self.index_path = self.vector_store_dir / "index.faiss"
+        self.meta_path = self.vector_store_dir / "metadata.jsonl"
+
+        if not self.index_path.exists() or not self.meta_path.exists():
+            raise FileNotFoundError(f"Vector store incomplete: {self.vector_store_dir}")
+
+        self.model = SentenceTransformer(model_name)
+        self.top_k_retrieve = top_k_retrieve
+        self.normalize_embeddings = normalize_embeddings
+        self.use_gpu = use_gpu
+        self.similarity_metric = similarity_metric.lower().strip()
+
+        if self.similarity_metric not in {"cosine", "dot"}:
+            raise ValueError(f"Unsupported similarity metric: {self.similarity_metric}")
+
+        # Load FAISS index
+        self.logger.info(f"Loading FAISS index from {self.index_path}")
+        self.index = faiss.read_index(str(self.index_path))
+
+        if self.use_gpu:
+            try:
+                res = faiss.StandardGpuResources()
+                self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
+                self.logger.info("FAISS GPU acceleration enabled")
+            except Exception as e:
+                self.logger.warning(f"GPU mode failed, falling back to CPU: {e}")
+
+        # Load metadata into memory once
+        with open(self.meta_path, "r", encoding="utf-8") as f:
+            self.metadata = [json.loads(line) for line in f]
+
+        self.logger.info(
+            f"FAISSRetriever initialized | entries={len(self.metadata)} | metric={self.similarity_metric.upper()}"
+        )
+
+    # ------------------------------------------------------------------
+    def _encode_query(self, query: str) -> np.ndarray:
+        """Encode query to embedding vector with optional normalization."""
+        vec = self.model.encode([query], normalize_embeddings=self.normalize_embeddings)
+        return np.asarray(vec, dtype="float32")
+
+    # ------------------------------------------------------------------
+    def _normalize_scores(self, distances: np.ndarray) -> np.ndarray:
+        """Normalize FAISS distances to similarity scores."""
+        if self.similarity_metric == "cosine":
+            # FAISS inner product (cosine) returns higher = better
+            return distances
+        elif self.similarity_metric == "dot":
+            # dot similarity is equivalent here; optional for clarity
+            return distances
+        else:
+            # fallback normalization
+            return 1 - distances
+
+    # ------------------------------------------------------------------
+    def search(self, query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Perform similarity search for a given text query."""
+        k = top_k or self.top_k_retrieve
+        k = max(1, min(k, self.index.ntotal))  # keep within safe bounds
+
+        q_vec = self._encode_query(query)
+        self.logger.debug(f"FAISS search | k={k} | query='{query[:60]}'")
+
+        distances, indices = self.index.search(q_vec, k)
+        scores = self._normalize_scores(distances[0])
+
+        results: List[Dict[str, Any]] = []
+        for score, idx in zip(scores, indices[0]):
+            if idx < 0 or idx >= len(self.metadata):
+                continue
+            entry = self.metadata[idx]
+            results.append({
+                "score": float(score),
+                "text": entry.get("text", "")[:500],
+                "metadata": entry.get("metadata", {}),
+            })
+
+        self.logger.info(f"Retrieved {len(results)} candidates for query: '{query[:60]}'")
+        return results
+
+    # ------------------------------------------------------------------
+    def close(self) -> None:
+        """Gracefully close retriever."""
+        self.logger.info("FAISS retriever closed")
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\query_expander.py ==== 
+from __future__ import annotations
+import re
+from typing import List
+
+class TemporalQueryExpander:
+    """Generates temporally diverse query variants to improve historical coverage."""
+
+    def __init__(self):
+        # Static synonym sets for common AI terminology
+        self.synonym_map = {
+            "ai": ["artificial intelligence", "machine intelligence", "intelligent systems"],
+            "neural": ["connectionist", "perceptron", "deep learning"],
+            "algorithm": ["heuristic", "procedure", "rule-based system"],
+        }
+
+        # Temporal cues for encouraging retrieval across decades
+        self.temporal_modifiers = [
+            "history of", "timeline of", "evolution of", "early developments in",
+            "recent trends in", "origins of", "milestones in", "historical overview of"
+        ]
+
+    # ------------------------------------------------------------------
+    def expand(self, query: str) -> List[str]:
+        """Return a small, meaningful set of semantically related and temporally expanded variants."""
+        q = query.strip()
+        q_lower = q.lower()
+
+        expansions: List[str] = []
+
+        # Synonym substitution (single keyword replacements)
+        for key, syns in self.synonym_map.items():
+            if re.search(rf"\b{re.escape(key)}\b", q_lower):
+                for s in syns:
+                    variant = re.sub(rf"\b{re.escape(key)}\b", s, q_lower)
+                    expansions.append(variant)
+
+        # Temporal modifier combinations
+        for t in self.temporal_modifiers:
+            if not any(t in q_lower for t in self.temporal_modifiers):
+                expansions.append(f"{t} {q_lower}")
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_exp = []
+        for e in expansions:
+            if e not in seen:
+                unique_exp.append(e)
+                seen.add(e)
+
+        return unique_exp
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\reranker_factory.py ==== 
+# src/core/retrieval/reranker_factory.py
+from __future__ import annotations
+from typing import Any, Dict
+from src.core.retrieval.temporal_reranker import TemporalReranker
+from src.core.retrieval.interfaces.i_reranker import IReranker
+
+class RerankerFactory:
+    """Factory for creating reranker instances from configuration."""
+
+    @staticmethod
+    def from_config(cfg: Dict[str, Any]) -> IReranker:
+        opts = cfg.get("options", {})
+        rtype = str(opts.get("reranker", "temporal")).lower()
+
+        if rtype == "temporal":
+            return TemporalReranker(
+                lambda_weight=float(opts.get("lambda_weight", 0.55)),
+                min_year=int(opts.get("min_year", 1900)),
+                enforce_decade_balance=bool(opts.get("enforce_decade_balance", True)),
+                age_score_boost=float(opts.get("age_score_boost", 0.25)),
+                min_decade_threshold=int(opts.get("min_decade_threshold", 3)),
+                nonlinear_boost=str(opts.get("nonlinear_boost", "sigmoid")),
+                ignore_years=opts.get("ignore_years", []),
+                recency_cutoff_year=opts.get("recency_cutoff_year", None),
+                allow_legacy_backfill=bool(opts.get("allow_legacy_backfill", True)),
+                legacy_backfill_max_ratio=float(opts.get("legacy_backfill_max_ratio", 0.3)),
+                must_include=opts.get("must_include", []),
+                blacklist_sources=opts.get("blacklist_sources", []),
+            )
+
+        raise ValueError(f"Unsupported reranker type: {rtype}")
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\retrieval_orchestrator.py ==== 
+# src/core/retrieval/retrieval_orchestrator.py
+from __future__ import annotations
+import logging
+from typing import List, Dict, Any, Optional, Tuple
+from collections import defaultdict
+from src.core.retrieval.faiss_retriever import FAISSRetriever
+from src.core.retrieval.query_expander import TemporalQueryExpander
+from src.core.retrieval.reranker_factory import RerankerFactory
+from src.core.config.config_loader import ConfigLoader
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    # Robust float parsing with default fallback
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+class RetrievalOrchestrator:
+    """Coordinates retrieval, query expansion, score fusion, reranking, and deduplication."""
+
+    def __init__(self, config_path: str = "configs/retrieval.yaml"):
+        self.logger = logging.getLogger("RetrievalOrchestrator")
+
+        # Load merged config (phase + master) for stable paths and options
+        cfg_loader = ConfigLoader(config_path, master_path="configs/config.yaml")
+        self.cfg: Dict[str, Any] = cfg_loader.config
+        self.paths: Dict[str, Any] = self.cfg.get("paths", {})
+        self.opts: Dict[str, Any] = self.cfg.get("options", {})
+
+        # Core options with safe defaults
+        log_level = getattr(logging, str(self.opts.get("log_level", "INFO")).upper(), logging.INFO)
+        logging.basicConfig(level=log_level, format="%(levelname)s | %(message)s")
+
+        # Query expansion switch and limits
+        self.enable_expansion: bool = bool(self.opts.get("enable_query_expansion", True))
+        self.max_expansions: int = int(self.opts.get("max_expansions", 4))
+        self.use_rrf: bool = bool(self.opts.get("use_rrf_fusion", True))
+        self.rrf_k: float = _safe_float(self.opts.get("rrf_k", 60.0), default=60.0)
+
+        # Diversity / constraints
+        self.enforce_decade_balance: bool = bool(self.opts.get("enforce_decade_balance", True))
+        self.min_decade_threshold: int = int(self.opts.get("min_decade_threshold", 3))
+        self.must_include: List[str] = list(self.opts.get("must_include", []))
+        self.blacklist_sources: List[str] = list(self.opts.get("blacklist_sources", []))
+        self.ignore_years: List[int] = list(self.opts.get("ignore_years", []))
+        self.min_year: int = int(self.opts.get("min_year", 1900))
+
+        # Controls for retrieval breadth
+        self.pre_rerank_k: int = int(self.opts.get("top_k_retrieve", 50))
+        self.final_k_default: int = int(self.opts.get("top_k", 10))
+
+        # Initialize retriever with consistent option names
+        self.retriever = FAISSRetriever(
+            vector_store_dir=str(self.paths.get("vector_store_dir", "data/vector_store")),
+            model_name=str(self.opts.get("embedding_model", "all-MiniLM-L6-v2")),
+            top_k_retrieve=self.pre_rerank_k,  # Wide pre-rerank search
+            normalize_embeddings=bool(self.opts.get("normalize_embeddings", True)),
+            use_gpu=bool(self.opts.get("use_gpu", False)),
+            similarity_metric=str(self.opts.get("similarity_metric", "cosine")).lower(),
+        )
+
+        # Initialize reranker and temporal query expander
+        self.reranker = RerankerFactory.from_config(self.cfg)
+        self.expander = TemporalQueryExpander() if self.enable_expansion else None
+
+        self.logger.info("Retriever + reranker pipeline initialized successfully.")
+
+    # ------------------------------------------------------------------
+    def retrieve(self, query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+        # Main entry: retrieval -> expansion -> fusion -> rerank -> constraints -> dedup
+        self.logger.info(f"Retrieving for query: {query}")
+
+        # Step 1: Build expanded query set (unique, bounded)
+        queries = [query]
+        if self.expander:
+            expansions = self.expander.expand(query)
+            # Keep unique order-preserving subset and respect max_expansions
+            seen = set([query.strip().lower()])
+            for e in expansions:
+                e_norm = e.strip().lower()
+                if e_norm not in seen:
+                    queries.append(e)
+                    seen.add(e_norm)
+                if len(queries) - 1 >= self.max_expansions:
+                    break
+            self.logger.debug(f"Expanded queries: {queries[1:]}")
+
+        # Step 2: Collect raw results per subquery
+        per_query_results: List[Tuple[str, List[Dict[str, Any]]]] = []
+        total = 0
+        for q in queries:
+            batch = self.retriever.search(q)
+            for r in batch:
+                r["__subquery"] = q  # annotate for later fusion/audit
+            per_query_results.append((q, batch))
+            total += len(batch)
+
+        if total == 0:
+            self.logger.warning("No results found.")
+            return []
+
+        self.logger.info(f"Initial retrieval produced {total} results across {len(queries)} query variants.")
+
+        # Step 3: Optional RRF/score fusion before reranking to diversify inputs
+        fused = self._reciprocal_rank_fusion(per_query_results) if self.use_rrf and len(queries) > 1 \
+            else [r for _, batch in per_query_results for r in batch]
+
+        # Step 4: Apply blacklist early to prevent undesired items from dominating
+        fused = self._apply_blacklist(fused, self.blacklist_sources)
+
+        # Step 5: Rerank with temporal/semantic fusion (uses config lambda/boost etc.)
+        rerank_budget = top_k or self.final_k_default
+        reranked = self.reranker.rerank(fused, top_k=len(fused))  # rerank all fused candidates
+
+        # Step 6: Hard must-include injection (if present in pool)
+        reranked = self._inject_must_include(reranked, self.must_include)
+
+        # Step 7: Deduplicate and enforce final top-k with optional decade balance
+        final = self._deduplicate_with_diversity(reranked, top_k=rerank_budget)
+
+        # Step 8: Log temporal distribution if requested
+        if bool(self.opts.get("log_decade_distribution", True)):
+            self._log_decade_distribution(final)
+
+        self.logger.info(f"Final results after reranking and deduplication: {len(final)} unique items.")
+        return final
+
+    # ------------------------------------------------------------------
+    def _reciprocal_rank_fusion(
+        self,
+        per_query_results: List[Tuple[str, List[Dict[str, Any]]]]
+    ) -> List[Dict[str, Any]]:
+        # RRF: combine per-query rankings to reward items that rank well across variants
+        # score_rrf(doc) = sum_q 1 / (k + rank_q(doc)), with k ~ 60 to smooth tails
+        rrf_scores: Dict[str, float] = {}
+        best_payload: Dict[str, Dict[str, Any]] = {}
+
+        for _, batch in per_query_results:
+            for rank, item in enumerate(batch, start=1):
+                meta = item.get("metadata", {}) or {}
+                key = (meta.get("source_file") or meta.get("title") or "unknown").strip().lower()
+                rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (self.rrf_k + rank)
+                # Keep representative payload with highest base score for tie-breaking
+                base = item.get("score", 0.0)
+                if key not in best_payload or base > best_payload[key].get("score", -1.0):
+                    best_payload[key] = item
+
+        fused = []
+        for k, payload in best_payload.items():
+            p = dict(payload)
+            p["score_rrf"] = rrf_scores.get(k, 0.0)
+            # Preserve a unified 'score' channel for downstream components
+            p["score"] = max(_safe_float(payload.get("score", 0.0)), _safe_float(p["score_rrf"], 0.0))
+            fused.append(p)
+
+        # Sort by fused score descending
+        fused.sort(key=lambda x: _safe_float(x.get("score", 0.0)), reverse=True)
+        return fused
+
+    # ------------------------------------------------------------------
+    def _apply_blacklist(self, results: List[Dict[str, Any]], blacklist: List[str]) -> List[Dict[str, Any]]:
+        # Remove any result whose source_file/title contains a blacklisted token
+        if not blacklist:
+            return results
+        bl = {b.strip().lower() for b in blacklist if b}
+        out = []
+        for r in results:
+            m = r.get("metadata", {}) or {}
+            name = (m.get("source_file") or m.get("title") or "").strip().lower()
+            if any(t in name for t in bl):
+                continue
+            out.append(r)
+        return out
+
+    # ------------------------------------------------------------------
+    def _inject_must_include(self, results: List[Dict[str, Any]], must: List[str]) -> List[Dict[str, Any]]:
+        # Ensure presence of required sources if they exist within results
+        if not must:
+            return results
+        must_lc = {m.strip().lower() for m in must}
+        # Promote must-include items to the front while preserving relative order
+        must_hits, others = [], []
+        for r in results:
+            m = r.get("metadata", {}) or {}
+            name = (m.get("source_file") or m.get("title") or "").strip().lower()
+            if any(t in name for t in must_lc):
+                must_hits.append(r)
+            else:
+                others.append(r)
+        return must_hits + others
+
+    # ------------------------------------------------------------------
+    def _deduplicate_with_diversity(self, results: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+        # Keep best per (source_file/title) and enforce optional decade-balance
+        unique: Dict[str, Dict[str, Any]] = {}
+        for r in results:
+            meta = r.get("metadata", {}) or {}
+            key = (meta.get("source_file") or meta.get("title") or "unknown").strip().lower()
+            score = _safe_float(r.get("final_score", r.get("score_adjusted", r.get("score", 0.0))), 0.0)
+            if key not in unique or score > _safe_float(unique[key].get("score", -1.0)):
+                r["score"] = score
+                unique[key] = r
+
+        deduped = list(unique.values())
+        # Optional decade-aware selection to mitigate tunnel vision
+        if self.enforce_decade_balance:
+            buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+            for r in deduped:
+                y = self._safe_year(r)
+                decade = f"{(y // 10) * 10}s" if y else "unknown"
+                buckets[decade].append(r)
+            # Sort each bucket by score desc
+            for d in buckets:
+                buckets[d].sort(key=lambda x: _safe_float(x.get("score", 0.0)), reverse=True)
+            # Round-robin pick across decades
+            ordered_decades = sorted(buckets.keys(), key=lambda d: (d == "unknown", d))
+            out: List[Dict[str, Any]] = []
+            idx = 0
+            while len(out) < top_k:
+                progressed = False
+                for d in ordered_decades:
+                    if idx < len(buckets[d]):
+                        out.append(buckets[d][idx])
+                        if len(out) >= top_k:
+                            break
+                        progressed = True
+                if not progressed:
+                    break
+                idx += 1
+            return out
+        else:
+            deduped.sort(key=lambda x: _safe_float(x.get("score", 0.0)), reverse=True)
+            return deduped[:top_k]
+
+    # ------------------------------------------------------------------
+    def _safe_year(self, r: Dict[str, Any]) -> Optional[int]:
+        # Extract a plausible year from metadata with guards
+        meta = r.get("metadata", {}) or {}
+        y = meta.get("year", r.get("year"))
+        try:
+            y = int(y)
+            if y in self.ignore_years or y < self.min_year or y > 2100:
+                return None
+            return y
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    def _log_decade_distribution(self, items: List[Dict[str, Any]]) -> None:
+        # Print a compact histogram over decades for auditability
+        hist: Dict[str, int] = defaultdict(int)
+        for r in items:
+            y = self._safe_year(r)
+            d = f"{(y // 10) * 10}s" if y else "unknown"
+            hist[d] += 1
+        msg = ", ".join([f"{k}:{v}" for k, v in sorted(hist.items())])
+        self.logger.info(f"Decade distribution: {msg}")
+
+    # ------------------------------------------------------------------
+    def close(self) -> None:
+        # Cleanly close FAISS retriever
+        try:
+            self.retriever.close()
+        except Exception as e:
+            self.logger.warning(f"Failed to close retriever: {e}")
+
+
+# ----------------------------------------------------------------------
+def main() -> None:
+    # Standalone execution for quick smoke tests
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+    logger = logging.getLogger("RetrievalOrchestrator")
+
+    orchestrator = RetrievalOrchestrator()
+    query = "Wie hat sich der Begriff KI im Laufe der Zeit entwickelt?"
+    results = orchestrator.retrieve(query, top_k=10)
+
+    logger.info(f"Top {len(results)} temporally diverse and unique results:")
+    for i, r in enumerate(results, start=1):
+        meta = r.get("metadata", {}) or {}
+        title = meta.get("title") or meta.get("source_file") or "Unknown"
+        year = meta.get("year") or r.get("year", "n/a")
+        score = _safe_float(r.get("final_score", r.get("score_adjusted", r.get("score", 0.0))), 0.0)
+        logger.info(f"[{i}] ({year}) {title} | Score={score:.4f}")
+
+    orchestrator.close()
+
+
+if __name__ == "__main__":
+    main()
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\temporal_reranker.py ==== 
+# src/core/retrieval/temporal_reranker.py
+from __future__ import annotations
+import logging
+import math
+from collections import defaultdict
+from statistics import median
+from datetime import datetime
+from typing import Any, Dict, List, Set
+from src.core.retrieval.interfaces.i_reranker import IReranker
+
+logger = logging.getLogger(__name__)
+
+class TemporalReranker(IReranker):
+    """
+    Temporal reranker combining semantic similarity and temporal diversity.
+    Incorporates recency bias, nonlinear age boost, decade balancing,
+    must-include enforcement, and blacklist exclusion.
+    """
+
+    def __init__(
+        self,
+        lambda_weight: float = 0.55,
+        min_year: int = 1900,
+        enforce_decade_balance: bool = True,
+        age_score_boost: float = 0.25,
+        min_decade_threshold: int = 3,
+        nonlinear_boost: str = "sigmoid",
+        ignore_years: List[int] | None = None,
+        recency_cutoff_year: int | None = None,
+        allow_legacy_backfill: bool = True,
+        legacy_backfill_max_ratio: float = 0.3,
+        must_include: List[str] | None = None,
+        blacklist_sources: List[str] | None = None,
+    ):
+        # Core weighting and balancing parameters
+        self.lambda_weight = lambda_weight
+        self.age_score_boost = age_score_boost
+        self.enforce_decade_balance = enforce_decade_balance
+        self.min_decade_threshold = min_decade_threshold
+        self.nonlinear_boost = nonlinear_boost.lower()
+        self.min_year = min_year
+
+        # Control sets and filters
+        self.ignore_years: Set[int] = set(ignore_years or [])
+        self.recency_cutoff_year = recency_cutoff_year
+        self.allow_legacy_backfill = allow_legacy_backfill
+        self.legacy_backfill_max_ratio = legacy_backfill_max_ratio
+        self.must_include = must_include or []
+        self.blacklist_sources = blacklist_sources or []
+
+    # ------------------------------------------------------------------
+    def rerank(self, results: List[Dict[str, Any]], top_k: int = 10) -> List[Dict[str, Any]]:
+        """Main entry: apply temporal weighting, decade balancing, and inclusion/exclusion logic."""
+        if not results:
+            logger.warning("No results to rerank.")
+            return []
+
+        # --- Step 1: Clean and filter input ---
+        for r in results:
+            r["year"] = self._extract_year(r)
+        results = [r for r in results if r["year"] not in self.ignore_years]
+        results = [r for r in results if not self._is_blacklisted(r)]
+
+        if not results:
+            logger.warning("All results filtered by blacklist or invalid years.")
+            return []
+
+        # --- Step 2: Compute boosted semantic scores ---
+        now = self._current_year()
+        for r in results:
+            y = r["year"]
+            r["score_adjusted"] = self._apply_time_boost(r.get("score", 0.0), y, now)
+
+        results.sort(key=lambda x: x["score_adjusted"], reverse=True)
+        decade_groups = self._group_by_decade(results)
+        decades = sorted(decade_groups.keys())
+
+        if not decades:
+            logger.warning("No valid decades detected; skipping temporal reranking.")
+            return results[:top_k]
+
+        # --- Step 3: Adjust lambda adaptively ---
+        if len(decades) < self.min_decade_threshold:
+            effective_lambda = min(self.lambda_weight, 0.5)
+            logger.debug(f"Few decades ({len(decades)}); reducing λ → {effective_lambda}")
+        else:
+            effective_lambda = self.lambda_weight
+
+        # --- Step 4: Select diverse subset ---
+        selected = (
+            self._select_balanced(decade_groups, decades, top_k)
+            if self.enforce_decade_balance
+            else results[:top_k]
+        )
+
+        # --- Step 5: Combine semantic + temporal diversity ---
+        median_decade = int(median(decades))
+        for r in selected:
+            sim = r.get("score_adjusted", 0.0)
+            decade_diff = abs((r["year"] // 10) * 10 - median_decade)
+            temporal_div = 1.0 / (1.0 + decade_diff / 10.0)
+            r["final_score"] = effective_lambda * sim + (1 - effective_lambda) * temporal_div
+
+        ranked = sorted(selected, key=lambda x: x["final_score"], reverse=True)
+
+        # --- Step 6: Apply recency cutoff and backfill ---
+        ranked = self._apply_recency_filter(ranked, results, top_k)
+
+        # --- Step 7: Inject must-include sources ---
+        ranked = self._inject_must_include(ranked, results, top_k)
+
+        logger.info(
+            f"Temporal reranking applied | decades={len(decades)} | selected={len(ranked)} | "
+            f"λ={effective_lambda:.2f} | age_boost={self.age_score_boost:.2f} | cutoff={self.recency_cutoff_year}"
+        )
+        return ranked[:top_k]
+
+    # ------------------------------------------------------------------
+    def _apply_time_boost(self, base: float, year: int, now: int) -> float:
+        """Apply nonlinear recency boost to semantic score."""
+        age = max(0, now - year)
+        if self.nonlinear_boost == "sigmoid":
+            s = 1 / (1 + math.exp((age - 6) / 4.0))
+        elif self.nonlinear_boost == "sqrt":
+            s = math.sqrt(max(0.0, 1.0 - min(age / 40.0, 1.0)))
+        else:
+            s = max(0.0, 1.0 - min(age / 30.0, 1.0))
+        return base + self.age_score_boost * s
+
+    # ------------------------------------------------------------------
+    def _apply_recency_filter(self, ranked: List[Dict[str, Any]], all_results: List[Dict[str, Any]], top_k: int):
+        """Favor recent items while allowing limited legacy backfill."""
+        if not self.recency_cutoff_year:
+            return ranked[:top_k]
+
+        modern = [r for r in ranked if r["year"] >= self.recency_cutoff_year]
+        legacy = [r for r in ranked if r["year"] < self.recency_cutoff_year]
+
+        if len(modern) >= top_k:
+            return modern[:top_k]
+        if not self.allow_legacy_backfill:
+            return modern
+
+        max_legacy = int(top_k * self.legacy_backfill_max_ratio)
+        return (modern + legacy[:max_legacy])[:top_k]
+
+    # ------------------------------------------------------------------
+    def _inject_must_include(self, ranked: List[Dict[str, Any]], all_results: List[Dict[str, Any]], top_k: int):
+        """Ensure must-include items appear in final list."""
+        required = [r for r in all_results if self._matches_must_include(r)]
+        if not required:
+            return ranked
+
+        merged, seen = [], set()
+        for r in required + ranked:
+            key = self._source_key(r)
+            if key not in seen:
+                seen.add(key)
+                merged.append(r)
+            if len(merged) >= top_k:
+                break
+        return merged
+
+    # ------------------------------------------------------------------
+    def _extract_year(self, r: Dict[str, Any]) -> int:
+        """Safely parse year with fallback to min_year."""
+        meta = r.get("metadata", {})
+        y = meta.get("year") or r.get("year")
+        try:
+            y = int(str(y).strip())
+            return y if y >= self.min_year else self.min_year
+        except Exception:
+            return self.min_year
+
+    # ------------------------------------------------------------------
+    def _group_by_decade(self, results: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+        """Group results by decade for diversity enforcement."""
+        groups: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        for r in results:
+            d = (r["year"] // 10) * 10
+            groups[d].append(r)
+        for d in groups:
+            groups[d].sort(key=lambda x: x.get("score_adjusted", 0.0), reverse=True)
+        return groups
+
+    # ------------------------------------------------------------------
+    def _select_balanced(self, groups: Dict[int, List[Dict[str, Any]]], decades: List[int], top_k: int) -> List[Dict[str, Any]]:
+        """Round-robin select to ensure temporal diversity."""
+        selected: List[Dict[str, Any]] = []
+        # one per decade first
+        for d in decades:
+            if groups[d]:
+                selected.append(groups[d].pop(0))
+                if len(selected) >= top_k:
+                    return selected
+        # then round-robin fill
+        i = 0
+        while len(selected) < top_k and any(groups.values()):
+            d = decades[i % len(decades)]
+            if groups[d]:
+                selected.append(groups[d].pop(0))
+            i += 1
+        return selected
+
+    # ------------------------------------------------------------------
+    def _source_key(self, r: Dict[str, Any]) -> str:
+        meta = r.get("metadata", {})
+        return (meta.get("source_file") or meta.get("title") or "unknown").lower()
+
+    # ------------------------------------------------------------------
+    def _matches_must_include(self, r: Dict[str, Any]) -> bool:
+        key = self._source_key(r)
+        return any(m.lower() in key for m in self.must_include)
+
+    # ------------------------------------------------------------------
+    def _is_blacklisted(self, r: Dict[str, Any]) -> bool:
+        key = self._source_key(r)
+        return any(b.lower() in key for b in self.blacklist_sources)
+
+    # ------------------------------------------------------------------
+    def _current_year(self) -> int:
+        return datetime.utcnow().year
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\__init__.py ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\interfaces\i_reranker.py ==== 
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List
+
+
+class IReranker(ABC):
+    """Interface for reranker strategies (temporal, semantic, hybrid, etc.)."""
+    @abstractmethod
+    def rerank(self, results: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+        # Rerank a list of retrieval results based on a custom strategy
+        pass
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\interfaces\i_retriever.py ==== 
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List
+
+
+class IRetriever(ABC):
+    """Interface for all retriever implementations."""
+    @abstractmethod
+    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        # Return top-k relevant documents/chunks for a query
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        # Release resources if necessary
+        pass
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\interfaces\__init__.py ==== 
+.
