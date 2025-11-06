@@ -3,3 +3,4 @@ paths:
 
 options:
   top_k: 10
+  diversify_sources: true

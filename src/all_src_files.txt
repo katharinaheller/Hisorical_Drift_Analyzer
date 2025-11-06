@@ -4506,7 +4506,6 @@ class StructuredLogger:
 ==== C:\Users\katha\historical-drift-analyzer\src\core\logging\__init__.py ==== 
 .
 ==== C:\Users\katha\historical-drift-analyzer\src\core\prompt\prompt_orchestrator.py ==== 
-# src/core/prompt/prompt_orchestrator.py
 from __future__ import annotations
 import logging
 from typing import Dict, Any, Optional
@@ -4521,11 +4520,13 @@ class PromptOrchestrator:
     """
 
     def __init__(self, log_level: str = "INFO"):
-        # Initialize logger
+        # Initialize logger once
         self.logger = logging.getLogger("PromptOrchestrator")
         if not self.logger.handlers:
-            logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO),
-                                format="%(levelname)s | %(message)s")
+            logging.basicConfig(
+                level=getattr(logging, log_level.upper(), logging.INFO),
+                format="%(levelname)s | %(message)s"
+            )
 
         # Initialize submodules
         self.query_input = QueryInput()
@@ -4539,7 +4540,7 @@ class PromptOrchestrator:
         Returns
         -------
         dict
-            Structured prompt object with:
+            Structured prompt object:
             {
                 "raw_query": str,
                 "processed_query": str,
@@ -4547,16 +4548,15 @@ class PromptOrchestrator:
                 "timestamp": str,
                 ...
             }
-            Returns an empty dict if no valid input was given.
         """
         try:
-            # Step 1: read user input interactively
+            # Step 1: Read user input interactively
             raw_query: Optional[str] = self.query_input.read_interactive()
             if not raw_query or not raw_query.strip():
                 self.logger.warning("No input provided. Skipping prompt phase.")
                 return {}
 
-            # Step 2: preprocess and classify
+            # Step 2: Preprocess and classify
             result: Dict[str, Any] = self.preprocessor.process(raw_query)
             if not result or "processed_query" not in result:
                 self.logger.warning("Preprocessing failed or returned empty result.")
@@ -4566,10 +4566,17 @@ class PromptOrchestrator:
             return result
 
         except KeyboardInterrupt:
-            self.logger.info("Prompt input cancelled by user.")
-            return {}
+            # Re-raise to allow graceful termination by outer orchestrator
+            self.logger.info("Prompt input cancelled by user (Ctrl+C). Exiting interactive mode.")
+            raise
+
+        except EOFError:
+            # Handle Ctrl+D or input stream closure
+            self.logger.info("Input stream closed (EOF). Terminating prompt phase.")
+            raise KeyboardInterrupt  # unify behavior for clean exit
 
         except Exception as e:
+            # Log unexpected runtime errors but keep session alive
             self.logger.exception(f"Unexpected error in prompt phase: {e}")
             return {}
 .
@@ -4849,20 +4856,21 @@ from src.core.retrieval.interfaces.i_retriever import IRetriever
 
 
 class FAISSRetriever(IRetriever):
-    """FAISS-based semantic retriever with optional temporal modulation."""
+    """FAISS-based semantic retriever with optional temporal and source diversification."""
 
     def __init__(
         self,
         vector_store_dir: str,
         model_name: str,
-        top_k_retrieve: int = 50,            # # wide initial recall
+        top_k_retrieve: int = 50,
         normalize_embeddings: bool = True,
         use_gpu: bool = False,
-        similarity_metric: str = "cosine",   # # 'cosine' or 'dot'
-        temporal_awareness: bool = True,     # # enable temporal prior
-        temporal_tau: float = 8.0,           # # smoothing for |year - query_year|
-        temporal_weight: float = 0.30,       # # strength of temporal modulation
-        valid_year_range: Tuple[int, int] = (1900, 2100),  # # plausible year range
+        similarity_metric: str = "cosine",
+        temporal_awareness: bool = True,
+        temporal_tau: float = 8.0,
+        temporal_weight: float = 0.30,
+        valid_year_range: Tuple[int, int] = (1900, 2100),
+        diversify_sources: bool = True,      # # enable balanced source selection
     ):
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -4892,11 +4900,12 @@ class FAISSRetriever(IRetriever):
         self.temporal_tau = float(temporal_tau)
         self.temporal_weight = float(temporal_weight)
         self.valid_year_range = valid_year_range
+        self.diversify_sources = bool(diversify_sources)
 
         if self.similarity_metric not in {"cosine", "dot"}:
             raise ValueError(f"Unsupported similarity metric: {self.similarity_metric}")
 
-        # # Load FAISS index (optionally move to GPU)
+        # Load FAISS index
         self.logger.info(f"Loading FAISS index: {self.index_path}")
         self.index = faiss.read_index(str(self.index_path))
         if self.use_gpu:
@@ -4907,49 +4916,43 @@ class FAISSRetriever(IRetriever):
             except Exception as e:
                 self.logger.warning(f"GPU mode failed, falling back to CPU: {e}")
 
-        # # Load metadata into memory once
+        # Load metadata
         with open(self.meta_path, "r", encoding="utf-8") as f:
             self.metadata = [json.loads(line) for line in f]
 
         self.logger.info(
             f"FAISSRetriever ready | entries={len(self.metadata)} | metric={self.similarity_metric.upper()} "
-            f"| temporal_awareness={self.temporal_awareness}"
+            f"| temporal_awareness={self.temporal_awareness} | diversify_sources={self.diversify_sources}"
         )
 
     # ------------------------------------------------------------------
     def _encode_query(self, query: str) -> np.ndarray:
-        # # Encode with optional normalization
+        # Encode query with normalization
         vec = self.model.encode([query], normalize_embeddings=self.normalize_embeddings)
         return np.asarray(vec, dtype="float32")
 
-    # ------------------------------------------------------------------
     def _normalize_scores(self, distances: np.ndarray) -> np.ndarray:
-        # # For cosine/dot (IP), higher is better -> use as-is
+        # Normalize distances depending on metric
         if self.similarity_metric in {"cosine", "dot"}:
             return distances
         return 1 - distances
 
-    # ------------------------------------------------------------------
     def _extract_years_from_query(self, query: str) -> List[int]:
-        # # Only keep plausible 4-digit years
         yrs = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", query)]
         lo, hi = self.valid_year_range
         return [y for y in yrs if lo <= y <= hi]
 
-    # ------------------------------------------------------------------
     def _temporal_modulate(self, base_score: float, doc_year: Optional[int], query_years: List[int]) -> float:
-        # # Exponential distance weighting: nearer years -> higher boost
+        # Exponential weighting for temporal alignment
         if doc_year is None or not query_years:
             return base_score
         nearest = min(abs(doc_year - y) for y in query_years)
         w = exp(-nearest / max(self.temporal_tau, 1e-6))
         return base_score * (1.0 + self.temporal_weight * w)
 
-    # ------------------------------------------------------------------
     def _safe_doc_year(self, entry: Dict[str, Any]) -> Optional[int]:
-        # # Parse year from metadata robustly
         meta = entry.get("metadata", {}) or {}
-        y = meta.get("year", None)
+        y = meta.get("year")
         try:
             yi = int(str(y))
             lo, hi = self.valid_year_range
@@ -4960,23 +4963,42 @@ class FAISSRetriever(IRetriever):
         return None
 
     # ------------------------------------------------------------------
-    def search(self, query: str, top_k: Optional[int] = None, temporal_mode: bool = True) -> List[Dict[str, Any]]:
-        """Similarity search with optional temporal modulation."""
-        # # Toggle temporal behavior per-call for deterministic flows
-        self.temporal_awareness = bool(temporal_mode)
+    def _apply_source_diversity(self, results: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+        """Ensure chunks from different PDFs dominate early ranks."""
+        if not self.diversify_sources or not results:
+            return results[:top_k]
 
+        diversified, seen = [], set()
+        for r in results:
+            src = r["metadata"].get("source_file", "unknown")
+            if src not in seen:
+                diversified.append(r)
+                seen.add(src)
+            if len(diversified) >= top_k:
+                break
+
+        # Fill up with remaining if fewer than top_k unique
+        if len(diversified) < top_k:
+            for r in results:
+                if r not in diversified:
+                    diversified.append(r)
+                if len(diversified) >= top_k:
+                    break
+        return diversified
+
+    # ------------------------------------------------------------------
+    def search(self, query: str, top_k: Optional[int] = None, temporal_mode: bool = True) -> List[Dict[str, Any]]:
+        """Similarity search with optional temporal and source diversification."""
+        self.temporal_awareness = bool(temporal_mode)
         k = int(top_k or self.top_k_retrieve)
         k = max(1, min(k, self.index.ntotal))
 
         q_vec = self._encode_query(query)
-        self.logger.debug(f"FAISS search | k={k} | query='{query[:60]}' | temporal={self.temporal_awareness}")
-
-        D, I = self.index.search(q_vec, k)
+        D, I = self.index.search(q_vec, k * 5 if self.diversify_sources else k)
         scores = self._normalize_scores(D[0])
-
-        results: List[Dict[str, Any]] = []
         query_years = self._extract_years_from_query(query) if self.temporal_awareness else []
 
+        results: List[Dict[str, Any]] = []
         for score, idx in zip(scores, I[0]):
             if idx < 0 or idx >= len(self.metadata):
                 continue
@@ -4992,16 +5014,17 @@ class FAISSRetriever(IRetriever):
                 "metadata": entry.get("metadata", {}) or {},
             })
 
-        results.sort(key=lambda r: r.get("score", 0.0), reverse=True)
+        results.sort(key=lambda r: r["score"], reverse=True)
+        diversified = self._apply_source_diversity(results, top_k=k)
+
         self.logger.info(
-            f"Retrieved {len(results)} candidates | temporal_mode={self.temporal_awareness} "
-            f"| years_in_query={query_years if query_years else 'none'}"
+            f"Retrieved {len(diversified)} candidates | temporal_mode={self.temporal_awareness} "
+            f"| diversify_sources={self.diversify_sources} | years_in_query={query_years or 'none'}"
         )
-        return results
+        return diversified
 
     # ------------------------------------------------------------------
     def close(self) -> None:
-        """No-op for symmetry; kept for interface compliance."""
         self.logger.info("FAISS retriever closed")
 .
 ==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\reranker_factory.py ==== 
@@ -5101,6 +5124,9 @@ class RetrievalOrchestrator:
         self.vector_store_dir = str(paths.get("vector_store_dir", "data/vector_store"))
         self.embedding_model = opts.get("embedding_model", "all-MiniLM-L6-v2")
 
+        # New: read diversify flag from YAML (default True)
+        self.diversify_sources = bool(opts.get("diversify_sources", True))
+
         # Initialize FAISS retriever
         self.retriever = FAISSRetriever(
             vector_store_dir=self.vector_store_dir,
@@ -5110,19 +5136,19 @@ class RetrievalOrchestrator:
             use_gpu=False,
             similarity_metric="cosine",
             temporal_awareness=False,
+            diversify_sources=self.diversify_sources,
         )
 
         # Embedding model for similarity and diversity computations
         self.embed_model = SentenceTransformer(self.embedding_model)
 
-        self.logger.info(f"RetrievalOrchestrator initialized | top_k={self.top_k}")
+        self.logger.info(
+            f"RetrievalOrchestrator initialized | top_k={self.top_k} | diversify_sources={self.diversify_sources}"
+        )
 
     # ------------------------------------------------------------------
     def retrieve(self, query: str, intent: str) -> List[Dict[str, Any]]:
-        """
-        Retrieve relevant chunks according to user intent.
-        intent ∈ {'conceptual', 'chronological', 'analytical', 'comparative'}
-        """
+        """Retrieve relevant chunks according to user intent."""
         if not query or not query.strip():
             self.logger.warning("Empty query ignored.")
             return []
@@ -5130,7 +5156,6 @@ class RetrievalOrchestrator:
         is_historical = intent == "chronological"
         self.logger.info(f"Retrieval started | intent={intent} | top_k={self.top_k}")
 
-        # Step 1: retrieve raw candidates from FAISS
         try:
             raw_results = self.retriever.search(query, top_k=self.top_k * 8, temporal_mode=is_historical)
         except Exception as e:
@@ -5141,7 +5166,7 @@ class RetrievalOrchestrator:
             self.logger.warning("No retrieval results found.")
             return []
 
-        # Step 2: choose reranker (semantic or temporal)
+        # Step 2: reranking
         reranker_type = "temporal" if is_historical else "semantic"
         self.reranker = RerankerFactory.from_config({"options": {"reranker": reranker_type}})
         try:
@@ -5150,10 +5175,9 @@ class RetrievalOrchestrator:
             self.logger.exception(f"Reranking failed ({reranker_type}): {e}")
             reranked = raw_results
 
-        # Sort by reranked scores
         reranked.sort(key=lambda x: x.get("final_score", x.get("score", 0.0)), reverse=True)
 
-        # Step 3: enforce diversity (historical only)
+        # Step 3: optional historical diversity enforcement
         final = self._ensure_exact_k(
             self._enforce_diversity(reranked, self.top_k, is_historical),
             self.top_k,
@@ -5165,7 +5189,7 @@ class RetrievalOrchestrator:
 
     # ------------------------------------------------------------------
     def _enforce_diversity(self, results: List[Dict[str, Any]], k: int, historical: bool) -> List[Dict[str, Any]]:
-        """Diversify by decade and source for chronological intent, otherwise maximize precision."""
+        """Diversify by decade and source for chronological intent."""
         if not results:
             return []
 
@@ -5186,14 +5210,12 @@ class RetrievalOrchestrator:
             decade = (year // 10) * 10 if year else None
 
             if not historical:
-                # For conceptual/analytical queries, avoid duplicates only
                 if hash(text) in seen:
                     continue
                 seen.add(hash(text))
                 selected.append(r)
                 continue
 
-            # For historical mode, enforce source/decade diversity
             if src in used_sources and decade in used_decades and len(selected) < k * 0.8:
                 continue
 
@@ -5224,7 +5246,7 @@ class RetrievalOrchestrator:
 
     # ------------------------------------------------------------------
     def _safe_year(self, r: Dict[str, Any]) -> Optional[int]:
-        """Safely extract valid publication year from metadata."""
+        """Safely extract valid publication year."""
         meta = r.get("metadata", {}) or {}
         y = meta.get("year", r.get("year"))
         try:
@@ -5236,7 +5258,7 @@ class RetrievalOrchestrator:
         return None
 
     def _log_decade_distribution(self, items: List[Dict[str, Any]]) -> None:
-        """Log decade distribution for temporal diagnostics."""
+        """Log decade distribution for diagnostics."""
         hist: Dict[str, int] = defaultdict(int)
         for r in items:
             y = self._safe_year(r)

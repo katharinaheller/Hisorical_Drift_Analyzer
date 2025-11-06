@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 import os
+import json
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -13,6 +14,12 @@ from src.core.embedding.embedding_orchestrator import main as run_embedding
 from src.core.retrieval.retrieval_orchestrator import RetrievalOrchestrator
 from src.core.prompt.prompt_orchestrator import PromptOrchestrator
 from src.core.llm.llm_orchestrator import LLMOrchestrator
+
+# Optional import: evaluator module for KPIs (NDCG@k + Faithfulness)
+try:
+    from src.core.evaluation.evaluator import Evaluator
+except Exception:
+    Evaluator = None  # # Gracefully handle missing evaluator module
 
 
 class MainOrchestrator:
@@ -69,6 +76,9 @@ class MainOrchestrator:
 
             elif phase == "llm":
                 self._run_llm_interactive()
+
+            elif phase == "evaluation":
+                self._run_evaluation()
 
             elif phase == "all":
                 self.logger.info("Running full pipeline (ingestion → embedding → interactive LLM phase)")
@@ -128,7 +138,10 @@ class MainOrchestrator:
             meta = r.get("metadata", {}) or {}
             year = meta.get("year", "n/a")
             src = meta.get("source_file") or meta.get("title") or "Unknown"
-            print(f"[{i}] ({year}) {src} | score={r.get('score', 0.0):.3f}")
+            score = r.get("final_score", r.get("score", 0.0))
+            rel = r.get("relevance", None)
+            rel_str = f" | rel={rel}" if rel is not None else ""
+            print(f"[{i}] ({year}) {src} | score={float(score):.3f}{rel_str}")
         print("=" * 80 + "\n")
 
         try:
@@ -138,6 +151,20 @@ class MainOrchestrator:
             print("\n=== MODEL OUTPUT ===\n")
             print(output)
             print("\n====================\n")
+
+            # Inline evaluation if evaluator is available
+            if Evaluator is not None:
+                self.logger.info("Running inline evaluation (NDCG@k + Faithfulness)...")
+                evaluator = Evaluator(output_dir="data/eval_logs", k=int(self.cfg.get("evaluation", {}).get("k", 5)))
+                metrics = evaluator.evaluate(
+                    query_id=self._safe_query_id(query),
+                    retrieved_chunks=retrieved,
+                    answer=output or ""
+                )
+                self.logger.info(f"Inline Eval → NDCG@k={metrics.get('ndcg@k', 0.0):.3f} | Faithfulness={metrics.get('faithfulness', 0.0):.3f}")
+            else:
+                self.logger.warning("Evaluator module not available; skipping inline evaluation.")
+
             llm_orch.close()
         except Exception as e:
             self.logger.error(f"Automatic LLM generation failed: {e}")
@@ -153,6 +180,72 @@ class MainOrchestrator:
             self.logger.info("Interactive session terminated by user.")
         finally:
             llm_orch.close()
+
+    # ------------------------------------------------------------------
+    def _run_evaluation(self) -> None:
+        """Batch evaluation over existing logs (end-to-end and retrieval KPIs)."""
+        if Evaluator is None:
+            self.logger.error("Evaluator module not available. Please add src/core/evaluation/evaluator.py.")
+            return
+
+        # Resolve directories from config with sensible defaults
+        paths_cfg = self.cfg.get("paths", {})
+        logs_dir = Path(paths_cfg.get("logs_dir", "data/logs")).resolve()
+        eval_out = Path(paths_cfg.get("eval_logs_dir", "data/eval_logs")).resolve()
+        eval_out.mkdir(parents=True, exist_ok=True)
+
+        k_default = int(self.cfg.get("evaluation", {}).get("k", 5))
+        evaluator = Evaluator(output_dir=str(eval_out), k=k_default)
+
+        # Iterate over LLM run logs (assumed to contain retrieved_docs + model_output)
+        pattern = self.cfg.get("evaluation", {}).get("glob", "llm_*.json")
+        files = sorted(logs_dir.glob(pattern))
+        if not files:
+            self.logger.warning(f"No evaluation logs found under {logs_dir} matching '{pattern}'.")
+            return
+
+        # Aggregation buffers
+        ndcgs: List[float] = []
+        faiths: List[float] = []
+
+        self.logger.info(f"Evaluating {len(files)} run(s) from {logs_dir} ...")
+        for fp in files:
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                qid = data.get("query_id") or self._safe_query_id(data.get("query", fp.stem))
+                retrieved = data.get("retrieved_docs") or data.get("retrieved_chunks") or []
+                answer = data.get("model_output") or data.get("answer") or ""
+
+                # Run evaluation for this query
+                metrics = evaluator.evaluate(query_id=qid, retrieved_chunks=retrieved, answer=answer)
+                ndcgs.append(float(metrics.get("ndcg@k", 0.0)))
+                faiths.append(float(metrics.get("faithfulness", 0.0)))
+
+            except Exception as e:
+                self.logger.warning(f"Failed to evaluate {fp.name}: {e}")
+
+        # Print summary
+        def mean(xs: List[float]) -> float:
+            return sum(xs) / len(xs) if xs else 0.0
+
+        self.logger.info(f"Evaluation Summary → files={len(files)} | k={k_default}")
+        self.logger.info(f"Mean NDCG@k = {mean(ndcgs):.3f} | Mean Faithfulness = {mean(faiths):.3f}")
+        print("\n=== EVALUATION SUMMARY ===")
+        print(f"Files evaluated : {len(files)}")
+        print(f"k (NDCG@k)     : {k_default}")
+        print(f"Mean NDCG@k    : {mean(ndcgs):.3f}")
+        print(f"Mean Faithfulness: {mean(faiths):.3f}")
+        print("==========================\n")
+
+    # ------------------------------------------------------------------
+    def _safe_query_id(self, query: str) -> str:
+        """Generate a filesystem-safe query id."""
+        if not query:
+            return "unknown_query"
+        q = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in query.strip())
+        return q[:80] or "query"
+
 
     # ------------------------------------------------------------------
     def run(self, args: argparse.Namespace) -> None:
