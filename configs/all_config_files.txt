@@ -1,0 +1,127 @@
+==== C:\Users\katha\historical-drift-analyzer\configs\all_config_files.txt ==== 
+==== C:\Users\katha\historical-drift-analyzer\configs\all_config_files.txt ==== 
+
+==== C:\Users\katha\historical-drift-analyzer\configs\config.yaml ==== 
+# Historical Drift Analyzer – Master Configuration
+# Central control instance for modular RAG pipeline components
+
+global:
+  project_name: "Historical Drift Analyzer"
+  base_dir: "C:/Users/katha/historical-drift-analyzer"
+  log_level: "INFO"
+
+runtime:
+  hardware:
+    gpu_enabled: true
+    max_threads: 8
+  environment:
+    offline_mode: true
+    deterministic_mode: true
+
+ingestion:
+  paths:
+    raw_pdfs: "${base_dir}/data/raw_pdfs"
+    parsed: "${base_dir}/data/processed/parsed"
+    metadata: "${base_dir}/data/processed/metadata"
+
+indexing:
+  paths:
+    embeddings_dir: "${base_dir}/data/embeddings"
+    vector_index_dir: "${base_dir}/data/vectorstores/faiss"
+
+# New: unified evaluation settings for batch KPI computation
+evaluation:
+  k: 5                                 # top-k for NDCG@k
+  logs_dir: "${base_dir}/data/logs"    # where llm_*.json are written
+  eval_logs_dir: "${base_dir}/data/eval_logs"
+  ground_truth_path: "${base_dir}/data/eval/ground_truth.json"
+  glob: "llm_*.json"                   # filename pattern of LLM run logs
+
+==== C:\Users\katha\historical-drift-analyzer\configs\embedding.yaml ==== 
+options:
+  vector_store: "FAISS"           # supported: FAISS, LanceDB, SQLite
+  embedding_backend: "sentence-transformers"
+  embedding_model: "all-MiniLM-L6-v2"
+  dimension: 384                  # will be inferred if omitted
+  normalize_embeddings: true
+  batch_size: 16
+  log_level: "INFO"
+
+paths:
+  chunks_dir: "data/processed/chunks"
+  metadata_dir: "data/processed/metadata"
+  vector_store_dir: "data/vector_store"
+
+==== C:\Users\katha\historical-drift-analyzer\configs\ingestion.yaml ==== 
+# ingestion.yaml
+global:
+  base_dir: "${PROJECT_ROOT}"
+
+paths:
+  raw_pdfs: "${base_dir}/data/raw_pdfs"
+  parsed: "${base_dir}/data/processed/parsed"
+  metadata: "${base_dir}/data/processed/metadata"
+
+options:
+  language: "aut"
+  pdf_parser: "fitz" #fitz
+  parallelism: "auto"
+  metadata_fields:
+    - title
+    - authors
+    - year
+    - detected_language
+    - file_size
+    - toc
+
+chunking:
+  mode: "static"  # "adaptive" chooses optimal chunk sizes automatically
+  chunk_size: 200  # Used only if mode = "static", define the fixed chunk size (in tokens)
+  overlap: 5  # Overlap size in tokens (used when `enable_overlap` is true)
+  enable_overlap: true  # Enable overlapping chunks between adjacent chunks
+  sentence_boundary_detection: true  # Prefer splitting at sentence boundaries to maintain context
+  merge_short_chunks: true  # Merge very short chunks (below min_chunk_length) to preserve context
+  min_chunk_length: 400  # Discard chunks shorter than this threshold (in tokens)
+
+save_intermediate: true
+log_level: "INFO"
+deterministic_mode: true
+
+==== C:\Users\katha\historical-drift-analyzer\configs\llm.yaml ==== 
+global:
+  log_level: INFO
+
+profiles:
+  default:
+    model: "mistral:7b-instruct"
+    temperature: 0.25
+    max_tokens: 1024
+    auto_pull: true
+
+  concise:
+    model: "mistral:latest"
+    temperature: 0.3
+    max_tokens: 512
+    auto_pull: false
+
+  reasoning:
+    model: "llama3:8b"               # optional, falls du noch ziehen möchtest
+    temperature: 0.15
+    max_tokens: 2048
+    auto_pull: true
+
+==== C:\Users\katha\historical-drift-analyzer\configs\prompt.yaml ==== 
+intent_labels:
+  chronological: "asks about temporal development or evolution of a concept"
+  conceptual: "asks for definition or theoretical explanation"
+  analytical: "asks for evaluation, critique, or analysis"
+  comparative: "asks for comparison or difference between ideas"
+
+==== C:\Users\katha\historical-drift-analyzer\configs\retrieval.yaml ==== 
+paths:
+  vector_store_dir: data/vector_store
+
+options:
+  top_k: 5
+  diversify_sources: true
+

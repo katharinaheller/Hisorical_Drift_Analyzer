@@ -2,5 +2,5 @@ paths:
   vector_store_dir: data/vector_store
 
 options:
-  top_k: 10
+  top_k: 5
   diversify_sources: true

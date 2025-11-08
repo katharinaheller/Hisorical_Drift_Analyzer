@@ -1,0 +1,100 @@
+What is artificial intelligence?
+Provide a rigorous definition of AI using only the provided context.
+Outline the core subfields of AI mentioned in the corpus.
+Explain the Turing Test as described in the corpus.
+Summarize limitations of defining intelligence highlighted in the corpus.
+Define universal intelligence as discussed in the corpus.
+Describe expert systems and their key components.
+Explain knowledge representation in expert systems according to the corpus.
+List examples of early medical expert systems cited in the corpus.
+List examples of electronics expert systems cited in the corpus.
+Compare expert systems and neural network based systems in the corpus.
+Summarize the SP theory and its relation to AI.
+What is an intelligent database in the SP theory context?
+Summarize AI ethics and trustworthiness concerns in the 2020s sources.
+How should misuse risks of AI be mitigated according to the corpus?
+How did the definition of AI evolve across the sources?
+Trace key AI milestones across decades referenced in the corpus.
+Compare evaluation approaches: Turing Test versus task performance, as in the corpus.
+What criteria are used to judge machine intelligence in the corpus?
+Summarize how human-like conversation is evaluated in the corpus.
+Summarize AI as portrayed in database applications within the corpus.
+Provide a chronological overview of AI concepts from oldest to newest source.
+Explain the notion of machine-generated text threats discussed in the corpus.
+State the main principles of trustworthy AI presented in the corpus.
+Rephrase and define AI concisely based only on the retrieved context.
+What is artificial intelligence? (duplicate to test stability)
+Provide a precise definition of AI using numeric citations only.
+How did AI concepts shift from rule-based expert systems to modern approaches according to the corpus?
+Contrast capability framing versus ethical framing of AI across the sources.
+Summarize how context completeness affects evaluation quality as discussed in the corpus.
+Discuss how symbolic AI and connectionism differ conceptually within the corpus.
+Explain the role of knowledge engineering in early AI systems.
+Summarize how probabilistic reasoning contributed to AI evolution in the corpus.
+Describe the emergence of machine learning as reflected in the sources.
+Outline how AI research priorities changed between the 1980s and 2020s.
+Explain how data availability influenced AI methodologies across decades.
+Summarize the notion of general intelligence versus narrow AI in the corpus.
+Compare human reasoning and artificial reasoning as presented in the sources.
+Define cognitive architectures and describe their relevance to AI research.
+Explain the historical role of Bayesian networks in AI reasoning.
+Summarize how logic-based AI approaches are represented in the corpus.
+Describe how natural language understanding is conceptualized in AI literature.
+Explain the relation between perception and action in intelligent agents.
+Summarize challenges of explainability in AI according to the corpus.
+Compare symbolic reasoning and statistical learning paradigms in the sources.
+Describe how AI evaluation metrics evolved over time.
+Summarize approaches to knowledge acquisition mentioned in the corpus.
+Explain the contribution of expert knowledge bases to early AI success.
+Discuss the transition from handcrafted features to representation learning.
+Describe how reinforcement learning is portrayed in the corpus.
+Explain the role of training data quality in AI system performance.
+Summarize the emergence of ethical AI frameworks over the decades.
+Compare deterministic and probabilistic AI models discussed in the sources.
+Describe the influence of computational power on AI capabilities.
+Summarize how human-AI collaboration is framed in later sources.
+Explain how AI applications in robotics evolved within the corpus.
+Discuss how the corpus differentiates between AI research and AI engineering.
+Summarize debates about AI autonomy and control in the 2020s.
+Explain how uncertainty is modeled in AI systems across decades.
+Describe how evaluation reproducibility is addressed in AI research according to the corpus.
+Define the term artificial agent as used in the corpus.
+Explain how AI differs from traditional algorithmic programming according to the sources.
+Summarize how search algorithms contributed to early AI progress.
+Explain the concept of heuristic search as described in the corpus.
+Describe how AI systems learn from data as presented in the sources.
+Discuss the influence of computational linguistics on AI research.
+Explain the difference between supervised and unsupervised learning in the corpus.
+Summarize how symbolic representation enables inference in AI.
+Describe how knowledge inference operates within expert systems.
+Explain how rule-based systems manage uncertainty according to the corpus.
+Discuss the limitations of if–then logic in complex AI systems.
+Describe the purpose of ontologies in knowledge-based AI approaches.
+Explain how semantic networks contribute to reasoning in AI.
+Compare declarative and procedural representations of knowledge.
+Discuss how AI approaches mimic human decision-making processes.
+Explain the connection between AI reasoning and probabilistic logic.
+Describe the notion of transparency in AI decision processes.
+Summarize how bias is introduced through data or model assumptions.
+Explain the importance of context completeness for retrieval-based reasoning.
+Discuss how AI interpretability is defined across different decades.
+Describe the historical transition from GOFAI to machine learning.
+Summarize how neural networks redefined AI paradigms after 2010.
+Explain how deep learning relates to previous connectionist ideas.
+Compare shallow learning and deep hierarchical learning structures.
+Discuss how knowledge abstraction differs between symbolic and neural models.
+Explain the emergence of hybrid AI models in the corpus.
+Describe how reasoning and perception are integrated in intelligent agents.
+Summarize how reinforcement learning extended adaptive behavior modeling.
+Explain how feedback loops improve AI performance over time.
+Describe how temporal context influences AI evaluation.
+Discuss how AI benchmarks evolved from symbolic tasks to open-ended reasoning.
+Explain how data-driven AI challenges symbolic interpretability.
+Summarize the discussion of cognitive plausibility in AI modeling.
+Explain societal impacts of AI progress discussed in the sources.
+Summarize regulatory perspectives on AI in the 2020s.
+Discuss ethical tensions between automation and accountability.
+Explain how explainable AI aligns with trustworthy AI principles.
+Describe how fairness and bias are quantified in AI ethics discussions.
+Summarize arguments for human oversight in critical AI systems.
+Explain how future directions for AI research are framed in the corpus.

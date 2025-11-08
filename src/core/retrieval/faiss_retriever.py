@@ -25,7 +25,7 @@ class FAISSRetriever(IRetriever):
         temporal_tau: float = 8.0,
         temporal_weight: float = 0.30,
         valid_year_range: Tuple[int, int] = (1900, 2100),
-        diversify_sources: bool = True,      # # enable balanced source selection
+        diversify_sources: bool = True,  # enable balanced source selection
     ):
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -92,11 +92,49 @@ class FAISSRetriever(IRetriever):
             return distances
         return 1 - distances
 
+    # ------------------------------------------------------------------
     def _extract_years_from_query(self, query: str) -> List[int]:
-        yrs = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", query)]
-        lo, hi = self.valid_year_range
-        return [y for y in yrs if lo <= y <= hi]
+        """
+        Extract explicit years (e.g. 2021), decade mentions (e.g. 'in the 2020s'),
+        or century references (e.g. '21st century') from a text query.
+        Returns a sorted list of representative years.
+        """
+        if not query:
+            return []
 
+        text = query.lower()
+        years: set[int] = set()
+        lo, hi = self.valid_year_range
+
+        # 1) Explicit years (e.g. 1999, 2023)
+        for m in re.findall(r"\b(19\d{2}|20\d{2})\b", text):
+            try:
+                y = int(m)
+                if lo <= y <= hi:
+                    years.add(y)
+            except ValueError:
+                continue
+
+        # 2) Decades (e.g. 1980s, 2020s, early 1990s)
+        for m in re.findall(r"\b(19|20)\d0s\b", text):
+            try:
+                decade = int(m + "0")
+                if lo <= decade <= hi:
+                    years.update(range(decade, decade + 10))
+            except ValueError:
+                continue
+
+        # 3) Centuries (e.g. "20th century", "21st century")
+        if "20th century" in text:
+            years.update(range(1900, 2000))
+        if "21st century" in text:
+            years.update(range(2000, 2100))
+
+        # Optional compact logging: only start years of detected decades
+        unique_decades = sorted({(y // 10) * 10 for y in years})
+        return unique_decades
+
+    # ------------------------------------------------------------------
     def _temporal_modulate(self, base_score: float, doc_year: Optional[int], query_years: List[int]) -> float:
         # Exponential weighting for temporal alignment
         if doc_year is None or not query_years:
@@ -106,6 +144,7 @@ class FAISSRetriever(IRetriever):
         return base_score * (1.0 + self.temporal_weight * w)
 
     def _safe_doc_year(self, entry: Dict[str, Any]) -> Optional[int]:
+        # Extract publication year safely from metadata
         meta = entry.get("metadata", {}) or {}
         y = meta.get("year")
         try:

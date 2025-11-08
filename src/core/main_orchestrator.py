@@ -15,40 +15,43 @@ from src.core.retrieval.retrieval_orchestrator import RetrievalOrchestrator
 from src.core.prompt.prompt_orchestrator import PromptOrchestrator
 from src.core.llm.llm_orchestrator import LLMOrchestrator
 
-# Optional import: evaluator module for KPIs (NDCG@k + Faithfulness)
+# Import evaluation orchestrator via abstraction
 try:
-    from src.core.evaluation.evaluator import Evaluator
+    from src.core.evaluation.evaluation_orchestrator import EvaluationOrchestrator
 except Exception:
-    Evaluator = None  # # Gracefully handle missing evaluator module
+    EvaluationOrchestrator = None  # # Allow pipeline to run without evaluation module
 
 
 class MainOrchestrator:
-    """Central controller coordinating all pipeline phases of the Historical Drift Analyzer."""
+    """Central controller coordinating all pipeline phases."""
 
     def __init__(self, config_path: str = "configs/config.yaml"):
-        # Ensure UTF-8 runtime consistency
+        # Ensure consistent UTF-8 runtime
         os.environ["PYTHONIOENCODING"] = "utf-8"
         os.environ["PYTHONUTF8"] = "1"
         os.environ["LC_ALL"] = "C.UTF-8"
         os.environ["LANG"] = "C.UTF-8"
 
-        # Reconfigure stdout/stderr for UTF-8
-        for stream_name in ("stdout", "stderr"):
-            stream = getattr(sys, stream_name, None)
-            if hasattr(stream, "reconfigure"):
-                try:
-                    stream.reconfigure(encoding="utf-8", errors="replace")
-                except Exception:
-                    pass
+        # Reconfigure streams for UTF-8
+        if hasattr(sys, "stdout"):
+            try:
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        if hasattr(sys, "stderr"):
+            try:
+                sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
-        # Load global configuration and setup logging
+        # Load merged configuration and setup logging
         self.cfg_loader = ConfigLoader(config_path)
         self.cfg: Dict[str, Any] = self.cfg_loader.config
         self.logger = self._setup_logger()
 
     # ------------------------------------------------------------------
     def _setup_logger(self) -> logging.Logger:
-        """Initialize global logger."""
+        """Initialize process-wide logger based on config."""
         opts = self.cfg.get("global", {})
         level = getattr(logging, opts.get("log_level", "INFO").upper(), logging.INFO)
         logging.basicConfig(level=level, format="%(levelname)s | %(message)s")
@@ -58,9 +61,10 @@ class MainOrchestrator:
 
     # ------------------------------------------------------------------
     def run_phase(self, phase: str) -> None:
-        """Dispatch the orchestrator to the specified phase."""
+        """Dispatch to the selected pipeline phase."""
         self.logger.info(f"Starting phase: {phase.upper()}")
 
+        # Ensure project src in sys.path
         base_dir = Path(self.cfg["global"]["base_dir"]).resolve()
         sys.path.append(str(base_dir / "src"))
 
@@ -75,16 +79,22 @@ class MainOrchestrator:
                 self._run_prompt_retrieval_chain()
 
             elif phase == "llm":
-                self._run_llm_interactive()
+                self.logger.info("Launching LLM phase — interactive mode active.")
+                orchestrator = LLMOrchestrator()
+                orchestrator.run_interactive()
+                orchestrator.close()
 
             elif phase == "evaluation":
                 self._run_evaluation()
 
             elif phase == "all":
-                self.logger.info("Running full pipeline (ingestion → embedding → interactive LLM phase)")
+                self.logger.info("Running full pipeline (ingestion → embedding → prompt → retrieval → llm)")
                 run_ingestion()
                 run_embedding()
-                self._run_llm_interactive()
+                self._run_prompt_retrieval_chain()
+                orchestrator = LLMOrchestrator()
+                orchestrator.run_interactive()
+                orchestrator.close()
 
             else:
                 self.logger.error(f"Unknown phase: {phase}")
@@ -111,9 +121,10 @@ class MainOrchestrator:
 
     # ------------------------------------------------------------------
     def _run_prompt_retrieval_chain(self) -> None:
-        """Execute prompt → retrieval → automatic LLM generation (single-shot mode)."""
-        self.logger.info("Executing prompt → retrieval → LLM phase")
+        """Execute prompt → retrieval phase."""
+        self.logger.info("Executing prompt → retrieval phase")
 
+        # Prompt phase
         prompt_orch = PromptOrchestrator()
         prompt_data = prompt_orch.get_prompt_object()
         if not prompt_data or "processed_query" not in prompt_data:
@@ -123,137 +134,69 @@ class MainOrchestrator:
         query = prompt_data["processed_query"]
         intent = prompt_data["intent"]
 
+        # Retrieval phase
         retrieval = RetrievalOrchestrator(config_path="configs/retrieval.yaml")
         self.logger.info(f"Query intent='{intent}' → executing retrieval flow")
-        retrieved: List[Dict[str, Any]] = retrieval.retrieve(query, intent)
+        retrieved: List[Dict[str, Any]] = retrieval.retrieve(
+            query, temporal_mode=(intent == "chronological")
+        )
         retrieval.close()
 
         if not retrieved:
-            self.logger.warning("No documents retrieved.")
+            self.logger.warning("No results retrieved.")
             return
 
+        # Output results summary
         print("\n" + "=" * 80)
         print(f"Retrieved Top-{len(retrieved)} Chunks (intent={intent})")
         for i, r in enumerate(retrieved, start=1):
             meta = r.get("metadata", {}) or {}
             year = meta.get("year", "n/a")
-            src = meta.get("source_file") or meta.get("title") or "Unknown"
+            title = meta.get("source_file") or meta.get("title") or "Unknown"
             score = r.get("final_score", r.get("score", 0.0))
-            rel = r.get("relevance", None)
-            rel_str = f" | rel={rel}" if rel is not None else ""
-            print(f"[{i}] ({year}) {src} | score={float(score):.3f}{rel_str}")
+            print(f"[{i}] ({year}) {title} | score={float(score):.3f}")
         print("=" * 80 + "\n")
-
-        try:
-            self.logger.info("Launching Ollama model for contextual generation...")
-            llm_orch = LLMOrchestrator()
-            output = llm_orch.run_with_context(query, intent, retrieved)
-            print("\n=== MODEL OUTPUT ===\n")
-            print(output)
-            print("\n====================\n")
-
-            # Inline evaluation if evaluator is available
-            if Evaluator is not None:
-                self.logger.info("Running inline evaluation (NDCG@k + Faithfulness)...")
-                evaluator = Evaluator(output_dir="data/eval_logs", k=int(self.cfg.get("evaluation", {}).get("k", 5)))
-                metrics = evaluator.evaluate(
-                    query_id=self._safe_query_id(query),
-                    retrieved_chunks=retrieved,
-                    answer=output or ""
-                )
-                self.logger.info(f"Inline Eval → NDCG@k={metrics.get('ndcg@k', 0.0):.3f} | Faithfulness={metrics.get('faithfulness', 0.0):.3f}")
-            else:
-                self.logger.warning("Evaluator module not available; skipping inline evaluation.")
-
-            llm_orch.close()
-        except Exception as e:
-            self.logger.error(f"Automatic LLM generation failed: {e}")
-
-    # ------------------------------------------------------------------
-    def _run_llm_interactive(self) -> None:
-        """Start an interactive prompt → retrieval → LLM loop until Ctrl+C."""
-        self.logger.info("Starting interactive LLM session. Press Ctrl+C to exit.")
-        llm_orch = LLMOrchestrator()
-        try:
-            llm_orch.run_interactive()
-        except KeyboardInterrupt:
-            self.logger.info("Interactive session terminated by user.")
-        finally:
-            llm_orch.close()
 
     # ------------------------------------------------------------------
     def _run_evaluation(self) -> None:
-        """Batch evaluation over existing logs (end-to-end and retrieval KPIs)."""
-        if Evaluator is None:
-            self.logger.error("Evaluator module not available. Please add src/core/evaluation/evaluator.py.")
+        """Batch evaluation over prior LLM logs using registered metrics."""
+        if EvaluationOrchestrator is None:
+            self.logger.error("Evaluation module not available. Please ensure src/core/evaluation exists.")
             return
 
-        # Resolve directories from config with sensible defaults
-        paths_cfg = self.cfg.get("paths", {})
-        logs_dir = Path(paths_cfg.get("logs_dir", "data/logs")).resolve()
-        eval_out = Path(paths_cfg.get("eval_logs_dir", "data/eval_logs")).resolve()
-        eval_out.mkdir(parents=True, exist_ok=True)
+        # Resolve evaluation config with sensible defaults
+        eval_cfg = self.cfg.get("evaluation", {}) if isinstance(self.cfg, dict) else {}
+        logs_dir = Path(eval_cfg.get("logs_dir", "data/logs")).resolve()
+        out_dir = Path(eval_cfg.get("eval_logs_dir", "data/eval_logs")).resolve()
+        k = int(eval_cfg.get("k", 5))
+        glob_pat = eval_cfg.get("glob", "llm_*.json")
+        gt_path = eval_cfg.get("ground_truth_path", "data/eval/ground_truth.json")
 
-        k_default = int(self.cfg.get("evaluation", {}).get("k", 5))
-        evaluator = Evaluator(output_dir=str(eval_out), k=k_default)
+        # Create orchestrator and run batch evaluation
+        self.logger.info(
+            f"Evaluation settings → logs_dir={logs_dir} | out_dir={out_dir} | k={k} | glob={glob_pat}"
+        )
+        orch = EvaluationOrchestrator(
+            output_dir=str(out_dir),
+            k=k,
+            ground_truth_path=gt_path
+        )
+        summary = orch.evaluate_batch_from_logs(logs_dir=str(logs_dir), pattern=glob_pat)
 
-        # Iterate over LLM run logs (assumed to contain retrieved_docs + model_output)
-        pattern = self.cfg.get("evaluation", {}).get("glob", "llm_*.json")
-        files = sorted(logs_dir.glob(pattern))
-        if not files:
-            self.logger.warning(f"No evaluation logs found under {logs_dir} matching '{pattern}'.")
-            return
-
-        # Aggregation buffers
-        ndcgs: List[float] = []
-        faiths: List[float] = []
-
-        self.logger.info(f"Evaluating {len(files)} run(s) from {logs_dir} ...")
-        for fp in files:
-            try:
-                with open(fp, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                qid = data.get("query_id") or self._safe_query_id(data.get("query", fp.stem))
-                retrieved = data.get("retrieved_docs") or data.get("retrieved_chunks") or []
-                answer = data.get("model_output") or data.get("answer") or ""
-
-                # Run evaluation for this query
-                metrics = evaluator.evaluate(query_id=qid, retrieved_chunks=retrieved, answer=answer)
-                ndcgs.append(float(metrics.get("ndcg@k", 0.0)))
-                faiths.append(float(metrics.get("faithfulness", 0.0)))
-
-            except Exception as e:
-                self.logger.warning(f"Failed to evaluate {fp.name}: {e}")
-
-        # Print summary
-        def mean(xs: List[float]) -> float:
-            return sum(xs) / len(xs) if xs else 0.0
-
-        self.logger.info(f"Evaluation Summary → files={len(files)} | k={k_default}")
-        self.logger.info(f"Mean NDCG@k = {mean(ndcgs):.3f} | Mean Faithfulness = {mean(faiths):.3f}")
+        # Human-readable console summary
         print("\n=== EVALUATION SUMMARY ===")
-        print(f"Files evaluated : {len(files)}")
-        print(f"k (NDCG@k)     : {k_default}")
-        print(f"Mean NDCG@k    : {mean(ndcgs):.3f}")
-        print(f"Mean Faithfulness: {mean(faiths):.3f}")
+        print(f"files             : {summary.get('files', 0)}")
+        print(f"mean NDCG@{k:>2}   : {summary.get('mean_ndcg@k', 0.0):.3f}")
+        print(f"mean Faithfulness : {summary.get('mean_faithfulness', 0.0):.3f}")
         print("==========================\n")
 
     # ------------------------------------------------------------------
-    def _safe_query_id(self, query: str) -> str:
-        """Generate a filesystem-safe query id."""
-        if not query:
-            return "unknown_query"
-        q = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in query.strip())
-        return q[:80] or "query"
-
-
-    # ------------------------------------------------------------------
     def run(self, args: argparse.Namespace) -> None:
-        """Entrypoint for orchestrator execution."""
+        """Entrypoint dispatcher using parsed CLI args."""
         if args.phase:
             self.run_phase(args.phase)
         else:
-            self.logger.warning("No phase specified. Use --phase <name> or --phase all.")
+            self.logger.warning("No phase specified. Use --phase <name> or --phase all")
 
 
 # ----------------------------------------------------------------------

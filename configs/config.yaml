@@ -14,7 +14,6 @@ runtime:
     offline_mode: true
     deterministic_mode: true
 
-# Default phase configuration placeholders
 ingestion:
   paths:
     raw_pdfs: "${base_dir}/data/raw_pdfs"
@@ -25,3 +24,11 @@ indexing:
   paths:
     embeddings_dir: "${base_dir}/data/embeddings"
     vector_index_dir: "${base_dir}/data/vectorstores/faiss"
+
+# New: unified evaluation settings for batch KPI computation
+evaluation:
+  k: 5                                 # top-k for NDCG@k
+  logs_dir: "${base_dir}/data/logs"    # where llm_*.json are written
+  eval_logs_dir: "${base_dir}/data/eval_logs"
+  ground_truth_path: "${base_dir}/data/eval/ground_truth.json"
+  glob: "llm_*.json"                   # filename pattern of LLM run logs
