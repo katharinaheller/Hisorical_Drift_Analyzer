@@ -1,0 +1,12 @@
+{
+  "query_id": "Compare_and_contrast_the_main_theoretical_perspectives_on_outline_the_core_subfi",
+  "ndcg@k": 0.9980212250126027,
+  "faithfulness": 0.9444444444444444,
+  "dominant_decade": 2020,
+  "decade_counts": {
+    "2000s": 4,
+    "2020s": 6
+  },
+  "citation_hit_rate": 1.0,
+  "model_name": "mistral_7b"
+}

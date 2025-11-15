@@ -1,16 +1,31 @@
 paths:
-  vector_store_dir: data/vector_store   # directory containing FAISS index + metadata
+  vector_store_dir: data/vector_store  # FAISS index + metadata
 
 options:
-  # Retrieval parameters
-  top_k: 10                             # number of final chunks returned
-  oversample_factor: 15                 # initial retrieval size multiplier (for reranker)
-  diversify_sources: true               # enable source diversification for historical mode
+  # ---------------------------------------------------------
+  # Retrieval core settings (multi-stage)
+  # ---------------------------------------------------------
+  final_k: 10                 # number of chunks handed to the LLM
+  oversample_factor: 15       # FAISS candidates = final_k * oversample_factor
+  diversify_sources: true
 
-  # Embedding model settings
-  embedding_model: "multi-qa-mpnet-base-dot-v1"   # consistent with embedding.yaml
+  # ---------------------------------------------------------
+  # Embedding model
+  # ---------------------------------------------------------
+  embedding_model: "multi-qa-mpnet-base-dot-v1"
   normalize_embeddings: true
+  similarity_metric: "cosine"
+  use_gpu: false
 
-  # Optional reranking / retrieval fine-tuning
-  similarity_metric: "cosine"           # cosine similarity between normalized vectors
-  use_gpu: false                        # GPU retrieval disabled by default (CPU-safe)
+  # ---------------------------------------------------------
+  # Reranker selection
+  # ---------------------------------------------------------
+  reranker: "semantic"
+
+  # ---------------------------------------------------------
+  # Temporal reranker parameters
+  # ---------------------------------------------------------
+  semantic_threshold: 0.40
+  min_year: 1900
+  must_include: []
+  blacklist_sources: []

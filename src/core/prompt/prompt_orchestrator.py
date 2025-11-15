@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import re
 from typing import Dict, Any, Optional
 
 from src.core.prompt.query.query_input import QueryInput
@@ -57,6 +58,10 @@ class PromptOrchestrator:
 
             # Intent-guided reformulation
             refined_query = self.prompt_builder.reformulate_query(processed_query, intent)
+
+            # Cosmetic cleanup: remove duplicated “over time” patterns
+            refined_query = re.sub(r"over time\?\s*over time", "over time", refined_query, flags=re.IGNORECASE)
+            refined_query = re.sub(r"over time\s+over time", "over time", refined_query, flags=re.IGNORECASE)
 
             self.logger.info(f"Prompt phase complete → intent='{intent}', refined query='{refined_query}'")
             return {"refined_query": refined_query, "intent": intent}

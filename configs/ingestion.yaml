@@ -12,7 +12,7 @@ options:
   pdf_parser: "fitz" #fitz
   parallelism: "auto"
   metadata_fields:
-    - title
+    #- title
     #- authors
     - year
     #- detected_language
@@ -21,12 +21,12 @@ options:
 
 chunking:
   mode: "static"  # "adaptive" chooses optimal chunk sizes automatically
-  chunk_size: 400  # Used only if mode = "static", define the fixed chunk size (in tokens)
+  chunk_size: 300  # Used only if mode = "static", define the fixed chunk size (in tokens)
   overlap: 5  # Overlap size in tokens (used when `enable_overlap` is true)
   enable_overlap: true  # Enable overlapping chunks between adjacent chunks
   sentence_boundary_detection: true  # Prefer splitting at sentence boundaries to maintain context
   merge_short_chunks: true  # Merge very short chunks (below min_chunk_length) to preserve context
-  min_chunk_length: 400  # Discard chunks shorter than this threshold (in tokens)
+  min_chunk_length: 200  # Discard chunks shorter than this threshold (in tokens)
 
 save_intermediate: true
 log_level: "INFO"

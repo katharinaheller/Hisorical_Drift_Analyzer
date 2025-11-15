@@ -1,0 +1,7 @@
+{
+  "model_name": "phi3_4b",
+  "files": 20,
+  "evaluated_files": 10,
+  "mean_ndcg@k": 0.9997124394233781,
+  "mean_faithfulness": 0.9899509803921569
+}

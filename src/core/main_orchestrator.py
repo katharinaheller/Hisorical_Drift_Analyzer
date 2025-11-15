@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 from src.core.config.config_loader import ConfigLoader
 from src.core.ingestion.ingestion_orchestrator import main as run_ingestion
 from src.core.embedding.embedding_orchestrator import main as run_embedding
-from src.core.retrieval.retrieval_orchestrator import RetrievalOrchestrator
+from src.core.retrieval.orchestrator.retrieval_orchestrator import RetrievalOrchestrator
 from src.core.prompt.prompt_orchestrator import PromptOrchestrator
 from src.core.llm.llm_orchestrator import LLMOrchestrator
 

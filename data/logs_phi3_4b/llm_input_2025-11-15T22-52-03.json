@@ -1,0 +1,188 @@
+{
+  "timestamp": "2025-11-15T22-52-03",
+  "query_refined": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+  "intent": "conceptual",
+  "prompt_final_to_llm": "You are a domain expert in Artificial Intelligence. Provide a precise definition, clarify theoretical foundations, and explain how interpretations evolved across time and publications. Use event years ONLY if explicitly stated in the snippets. Use numeric IEEE-style citations [1], [2], etc., for statements supported by the provided snippets. Each number corresponds to one unique PDF listed below. Multiple snippets originating from the same PDF share the same number. Never assign multiple citation numbers to the same source.\n\n**Your final answer MUST end with a separate section titled 'References'.**\nThis section MUST list all unique PDFs exactly once, in the following strict format:\n[n] FILENAME.pdf (YEAR)\n\nDo not fabricate author names, journals, or article titles — only use the given filename and metadata year.\n\nTemporal Attribution Rules:\n1. You may ONLY use event years that appear explicitly in the snippet text.\n2. If the snippet text explicitly contains a year (e.g., 'In the 1950s', 'In 1976'), treat that as the factual historical reference.\n3. If a snippet DOES NOT contain an explicit event year, you MUST NOT guess, infer, approximate, or estimate any year.\n   Instead, write exactly: '(event year not stated; described in YEAR PDF [n])'.\n4. The metadata publication year indicates only when the PDF was published, not when the events occurred.\n5. Never replace or override an explicit event year with a metadata year.\n6. Never deduce approximate historical periods from textual content (e.g., never infer '1990s' unless explicitly stated).\n\nOutput Structuring Guidelines:\n- For every key historical or conceptual point:\n  • If an explicit event year exists in the snippet → include it.\n  • If no explicit event year exists → write '(event year not stated; described in YEAR PDF [n])'.\n- Recommended dual-year structure:\n  • (1950s; described in 2025 PDF [7]) The Turing Test was proposed as a benchmark.\nThis dual timestamping ensures full temporal grounding without hallucination.\n\nIMPORTANT:\n**Your output MUST end with a final section titled 'References'.**\nThis section must list all unique PDFs exactly once in IEEE numeric format.\n\nRefined query:\nDefine define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.\n\nYou are given the following context snippets from historical AI-related documents.\n\nContext snippets:\n[1] 0712.3329v1.pdf (2007)\n. In the current paper we explore universal intelligence in much greater detail, in particular the way in which it relates to mainstream views on human intelligence and other proposed definitions of machine intelligence. Human intelligence is an enormously rich topic with a complex intellectual, social and political history. . For an overview the interested reader might want to consult \"Handbook of Intelligence\" . [Ste00] edited by R. J. Sternberg. . Our objective in this section is simply to sk\n\n[1] 0712.3329v1.pdf (2007)\n. We then examine some of the properties of universal intelligence, such as its ability to sensibly order simple learning algorithms and connections to the theory of universal optimal learning agents.. Section 4 overviews other definitions and tests of machine intelligence that have been proposed. Although surveys of the Turing test and its many variants exist, for example [SCA00], as far as we know this section is the first general survey of definitions and tests of machine intelligence. . Give\n\n[1] 0712.3329v1.pdf (2007)\n. In this paper we approach the problem of defining machine intelligence as follows: Section 2 overviews well known theories, definitions and tests of intelligence that have been developed by psychologists. Our objective in this section is to gain an understanding of the essence of intelligence in the broadest possible terms. . In particular we are interested in commonly expressed ideas that could be applied to arbitrary systems and contexts, not just humans. . Section 3 takes these key ideas an\n\n[2] 0311031v1.pdf (2018)\n. The system is Turing-equivalent in the sense that it can model the workings of a universal Turing machine but, unlike the universal Turing machine and equivalent models such as Lamda Calculus or Post's Canonical System, it has much more to say about the nature of 'intelligence' (Wolff, 1999a). The entire theory is based on principles of minimum length encoding pioneered by Ray Solomonoff and others (see Li and Vit´anyi ). . •\n\n[1] 0712.3329v1.pdf (2007)\nIn this paper we approach this problem in the following way: We take a number of well known informal definitions of human intelligence that have been given by experts, and extract their essential features. These are then mathematically formalised to produce a general measure of intelligence for arbitrary machines. . We believe that this equation formally captures the concept of machine intelligence in the broadest reasonable sense. . We then show how this formal definition is related to the theo\n\n[1] 0712.3329v1.pdf (2007)\n. We are particularly interested in common themes and general perspectives on intelligence that could be applicable to many kinds of systems, as these will form the foundation of our definition of machine intelligence in the next section.. children. [Bin11]. It was found that Binet's test results were a good predictor of children's academic performance. . Lewis Terman of Stanford\n\n[1] 0712.3329v1.pdf (2007)\nTo measure the intelligence of such diverse systems in a meaningful way we must step back from the specifics of particular systems and establish the underlying fundamentals of what it is that we are really trying to measure. The difficulty of developing an abstract and highly general notion of intelligence is readily apparent. . Consider, for example, the memory and numerical computation tasks that appear in some intelligence tests and which were once regarded as defining hallmarks of human inte\n\n[2] 0311031v1.pdf (2018)\n. The SP theory is a new theory of computing and cognition developed with the aim of integrating and simplifying a range of concepts in computing and cognitive science, with a particular emphasis on concepts in artificial intelligence. An overview of the theory is presented in Wolff and more detail may be found in earlier publications cited there. . Amongst other things, the SP theory provides an attractive model for database applications, especially those requiring a measure of human-like 'inte\n\n[3] 3641289.pdf (2024)\n. We consistently maintain the related open-source materials at: INTRODUCTION Understanding the essence of intelligence and establishing whether a machine embodies it poses a compelling question for scientists. It is generally agreed upon that authentic intelligence equips us with reasoning capabilities, enables us to test hypotheses, and prepares for future eventualities. . In particular, Artificial Intelligence (AI) researchers focus on the development of machine-based intelligence, as opposed\n\n[2] 0311031v1.pdf (2018)\n. In the context of knowledge-based systems, a benefit of this versatile 'universal' format for knowledge is the scope that it offers for the seamless integration of different kinds of knowledge, minimising the awkward incompatibilities that arise in many computing systems.. • Ontologies and 'semantic' retrieval of information.\n\nNow answer the refined query using ONLY the context above. Use IEEE-style numeric citations [n]. If a claim lacks sufficient evidence, write 'insufficient evidence'.\n\nReference index:\n[1] 0712.3329v1.pdf (2007)\n[2] 0311031v1.pdf (2018)\n[3] 3641289.pdf (2024)\n\nIMPORTANT OUTPUT REQUIREMENTS:\nYour final answer MUST end with a separate section titled 'References'.\nThis final section MUST list all unique PDFs exactly once in the format:\n[n] FILENAME.pdf (YEAR)\nDo NOT omit this section. Do NOT invent filenames or years.\nThe 'References' section MUST appear at the very end of your output.",
+  "chunks_final_to_llm": [
+    {
+      "score": 0.7622325420379639,
+      "text": ". In the current paper we explore universal intelligence in much greater detail, in particular the way in which it relates to mainstream views on human intelligence and other proposed definitions of machine intelligence. Human intelligence is an enormously rich topic with a complex intellectual, social and political history. . For an overview the interested reader might want to consult \"Handbook of Intelligence\" . [Ste00] edited by R. J. Sternberg. . Our objective in this section is simply to sk",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": 0.7196253836154938,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::175d12dd01ed",
+      "rank": 1
+    },
+    {
+      "score": 0.6833217740058899,
+      "text": ". We then examine some of the properties of universal intelligence, such as its ability to sensibly order simple learning algorithms and connections to the theory of universal optimal learning agents.. Section 4 overviews other definitions and tests of machine intelligence that have been proposed. Although surveys of the Turing test and its many variants exist, for example [SCA00], as far as we know this section is the first general survey of definitions and tests of machine intelligence. . Give",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": 0.03254557028412819,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::d93703f6d548",
+      "rank": 2
+    },
+    {
+      "score": 0.7242297530174255,
+      "text": ". In this paper we approach the problem of defining machine intelligence as follows: Section 2 overviews well known theories, definitions and tests of intelligence that have been developed by psychologists. Our objective in this section is to gain an understanding of the essence of intelligence in the broadest possible terms. . In particular we are interested in commonly expressed ideas that could be applied to arbitrary systems and contexts, not just humans. . Section 3 takes these key ideas an",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -1.8065239936113358,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::b551e995a739",
+      "rank": 3
+    },
+    {
+      "score": 0.47641223669052124,
+      "text": ". The system is Turing-equivalent in the sense that it can model the workings of a universal Turing machine but, unlike the universal Turing machine and equivalent models such as Lamda Calculus or Post's Canonical System, it has much more to say about the nature of 'intelligence' (Wolff, 1999a). The entire theory is based on principles of minimum length encoding pioneered by Ray Solomonoff and others (see Li and Vit´anyi ). . •",
+      "metadata": {
+        "source_file": "0311031v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2018",
+        "detected_language": null,
+        "page_count": 25,
+        "origin_chunk_file": "0311031v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -1.9251058846712112,
+      "relevance": 3,
+      "id": "0311031v1.pdf::2018::915dff8c9b50",
+      "rank": 4
+    },
+    {
+      "score": 0.6865256428718567,
+      "text": "In this paper we approach this problem in the following way: We take a number of well known informal definitions of human intelligence that have been given by experts, and extract their essential features. These are then mathematically formalised to produce a general measure of intelligence for arbitrary machines. . We believe that this equation formally captures the concept of machine intelligence in the broadest reasonable sense. . We then show how this formal definition is related to the theo",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -2.20204721391201,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::fbf0fc9f1794",
+      "rank": 5
+    },
+    {
+      "score": 0.5312420129776001,
+      "text": ". We are particularly interested in common themes and general perspectives on intelligence that could be applicable to many kinds of systems, as these will form the foundation of our definition of machine intelligence in the next section.. children. [Bin11]. It was found that Binet's test results were a good predictor of children's academic performance. . Lewis Terman of Stanford",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.0029285848140717,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::ea49dafed84b",
+      "rank": 6
+    },
+    {
+      "score": 0.55263352394104,
+      "text": "To measure the intelligence of such diverse systems in a meaningful way we must step back from the specifics of particular systems and establish the underlying fundamentals of what it is that we are really trying to measure. The difficulty of developing an abstract and highly general notion of intelligence is readily apparent. . Consider, for example, the memory and numerical computation tasks that appear in some intelligence tests and which were once regarded as defining hallmarks of human inte",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.0338581204414368,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::78a3ab2819b2",
+      "rank": 7
+    },
+    {
+      "score": 0.43615829944610596,
+      "text": ". The SP theory is a new theory of computing and cognition developed with the aim of integrating and simplifying a range of concepts in computing and cognitive science, with a particular emphasis on concepts in artificial intelligence. An overview of the theory is presented in Wolff and more detail may be found in earlier publications cited there. . Amongst other things, the SP theory provides an attractive model for database applications, especially those requiring a measure of human-like 'inte",
+      "metadata": {
+        "source_file": "0311031v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2018",
+        "detected_language": null,
+        "page_count": 25,
+        "origin_chunk_file": "0311031v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -4.324970215559006,
+      "relevance": 3,
+      "id": "0311031v1.pdf::2018::e0c690d03c51",
+      "rank": 8
+    },
+    {
+      "score": 0.541978120803833,
+      "text": ". We consistently maintain the related open-source materials at: INTRODUCTION Understanding the essence of intelligence and establishing whether a machine embodies it poses a compelling question for scientists. It is generally agreed upon that authentic intelligence equips us with reasoning capabilities, enables us to test hypotheses, and prepares for future eventualities. . In particular, Artificial Intelligence (AI) researchers focus on the development of machine-based intelligence, as opposed",
+      "metadata": {
+        "source_file": "3641289.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2024",
+        "detected_language": null,
+        "page_count": 45,
+        "origin_chunk_file": "3641289.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -4.679521262645721,
+      "relevance": 3,
+      "id": "3641289.pdf::2024::e1d85cdbb466",
+      "rank": 9
+    },
+    {
+      "score": 0.4624430537223816,
+      "text": ". In the context of knowledge-based systems, a benefit of this versatile 'universal' format for knowledge is the scope that it offers for the seamless integration of different kinds of knowledge, minimising the awkward incompatibilities that arise in many computing systems.. • Ontologies and 'semantic' retrieval of information.",
+      "metadata": {
+        "source_file": "0311031v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2018",
+        "detected_language": null,
+        "page_count": 25,
+        "origin_chunk_file": "0311031v1.chunks.json"
+      },
+      "query": "Define define universal intelligence as discussed in the corpus., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -4.826752737164497,
+      "relevance": 3,
+      "id": "0311031v1.pdf::2018::4e87dbc3eb7f",
+      "rank": 10
+    }
+  ]
+}

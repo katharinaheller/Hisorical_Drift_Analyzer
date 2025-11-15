@@ -1,0 +1,191 @@
+{
+  "timestamp": "2025-11-15T22-56-22",
+  "query_id": "Define_provide_a_rigorous_definition_of_ai_using_only_the_provided_context___des",
+  "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+  "query_refined": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+  "intent": "conceptual",
+  "prompt_final_to_llm": "You are a domain expert in Artificial Intelligence. Provide a precise definition, clarify theoretical foundations, and explain how interpretations evolved across time and publications. Use event years ONLY if explicitly stated in the snippets. Use numeric IEEE-style citations [1], [2], etc., for statements supported by the provided snippets. Each number corresponds to one unique PDF listed below. Multiple snippets originating from the same PDF share the same number. Never assign multiple citation numbers to the same source.\n\n**Your final answer MUST end with a separate section titled 'References'.**\nThis section MUST list all unique PDFs exactly once, in the following strict format:\n[n] FILENAME.pdf (YEAR)\n\nDo not fabricate author names, journals, or article titles — only use the given filename and metadata year.\n\nTemporal Attribution Rules:\n1. You may ONLY use event years that appear explicitly in the snippet text.\n2. If the snippet text explicitly contains a year (e.g., 'In the 1950s', 'In 1976'), treat that as the factual historical reference.\n3. If a snippet DOES NOT contain an explicit event year, you MUST NOT guess, infer, approximate, or estimate any year.\n   Instead, write exactly: '(event year not stated; described in YEAR PDF [n])'.\n4. The metadata publication year indicates only when the PDF was published, not when the events occurred.\n5. Never replace or override an explicit event year with a metadata year.\n6. Never deduce approximate historical periods from textual content (e.g., never infer '1990s' unless explicitly stated).\n\nOutput Structuring Guidelines:\n- For every key historical or conceptual point:\n  • If an explicit event year exists in the snippet → include it.\n  • If no explicit event year exists → write '(event year not stated; described in YEAR PDF [n])'.\n- Recommended dual-year structure:\n  • (1950s; described in 2025 PDF [7]) The Turing Test was proposed as a benchmark.\nThis dual timestamping ensures full temporal grounding without hallucination.\n\nIMPORTANT:\n**Your output MUST end with a final section titled 'References'.**\nThis section must list all unique PDFs exactly once in IEEE numeric format.\n\nRefined query:\nDefine provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.\n\nYou are given the following context snippets from historical AI-related documents.\n\nContext snippets:\n[1] 3641289.pdf (2024)\n. Within the scope of AI, the Turing Test, a widely recognized test for assessing intelligence by discerning if responses are of human or machine origin, has been a longstanding objective in AI evolution. It is generally believed among researchers that a computing machine that successfully passes the Turing Test can be considered as intelligent. . Consequently, when viewed from a wider lens, the chronicle of AI can be depicted as the timeline of creation and evaluation of intelligent models and\n\n[1] 3641289.pdf (2024)\n. We consistently maintain the related open-source materials at: INTRODUCTION Understanding the essence of intelligence and establishing whether a machine embodies it poses a compelling question for scientists. It is generally agreed upon that authentic intelligence equips us with reasoning capabilities, enables us to test hypotheses, and prepares for future eventualities. . In particular, Artificial Intelligence (AI) researchers focus on the development of machine-based intelligence, as opposed\n\n[1] 3641289.pdf (2024)\n. A significant takeaway from previous attempts is the paramount importance of AI evaluation, which serves as a critical tool to identify current system limitations and inform the design of more powerful models. Recently, large language models (LLMs) have incited substantial interest across both academic and industrial domains. . As demonstrated by existing work, the great performance of LLMs has raised promise that they could be AGI in this era. . LLMs possess the capabilities to solve diverse\n\n[2] 2303.18223v16.pdf (2025)\n. Abstract—Ever since the Turing Test was proposed in the 1950s, humans have explored the mastering of language intelligence by machine.. Language is essentially a complex, intricate system of human expressions governed by grammatical rules. It poses a significant challenge to develop capable artificial intelligence (AI) algorithms for comprehending and grasping a language.\n\n[3] 0712.3329v1.pdf (2007)\n. In this paper we approach the problem of defining machine intelligence as follows: Section 2 overviews well known theories, definitions and tests of intelligence that have been developed by psychologists. Our objective in this section is to gain an understanding of the essence of intelligence in the broadest possible terms. . In particular we are interested in commonly expressed ideas that could be applied to arbitrary systems and contexts, not just humans. . Section 3 takes these key ideas an\n\n[4] 2210.07321v4.pdf (2023)\nAs such, trustworthy AI in the context of NLG necessitates understanding the areas where such models may be abused, and how these abuses may be prevented (either with detection technologies, moderation mechanisms, government legislation, or platform policies). When discussing attacks, we discuss not only the direct impact on targets, but also the broader impacts of both attacks and mitigation measures on trust.\n\n[4] 2210.07321v4.pdf (2023)\n. It may be difficult to differentiate those who mean to exploit such systems (e.g., thoughtlessly spam submissions to as many avenues as possible), and those who are relying on AI writing tools to better express themselves.\n\n[3] 0712.3329v1.pdf (2007)\n. In the current paper we explore universal intelligence in much greater detail, in particular the way in which it relates to mainstream views on human intelligence and other proposed definitions of machine intelligence. Human intelligence is an enormously rich topic with a complex intellectual, social and political history. . For an overview the interested reader might want to consult \"Handbook of Intelligence\" . [Ste00] edited by R. J. Sternberg. . Our objective in this section is simply to sk\n\n[3] 0712.3329v1.pdf (2007)\nIn this paper we approach this problem in the following way: We take a number of well known informal definitions of human intelligence that have been given by experts, and extract their essential features. These are then mathematically formalised to produce a general measure of intelligence for arbitrary machines. . We believe that this equation formally captures the concept of machine intelligence in the broadest reasonable sense. . We then show how this formal definition is related to the theo\n\n[1] 3641289.pdf (2024)\nThis statement demonstrates that supervised models significantly outperform zero-shot models in terms of performance, highlighting that an increase in parameters does not necessarily guarantee a higher level of social knowledge in this particular scenario.. 3.1.2. Reasoning. The task of reasoning poses significant challenges for an intelligent AI model. . To effectively tackle reasoning tasks, the models need to not only comprehend the provided information but also utilize reasoning and inferenc\n\nNow answer the refined query using ONLY the context above. Use IEEE-style numeric citations [n]. If a claim lacks sufficient evidence, write 'insufficient evidence'.\n\nReference index:\n[1] 3641289.pdf (2024)\n[2] 2303.18223v16.pdf (2025)\n[3] 0712.3329v1.pdf (2007)\n[4] 2210.07321v4.pdf (2023)\n\nIMPORTANT OUTPUT REQUIREMENTS:\nYour final answer MUST end with a separate section titled 'References'.\nThis final section MUST list all unique PDFs exactly once in the format:\n[n] FILENAME.pdf (YEAR)\nDo NOT omit this section. Do NOT invent filenames or years.\nThe 'References' section MUST appear at the very end of your output.",
+  "retrieved_chunks": [
+    {
+      "score": 0.5473401546478271,
+      "text": ". Within the scope of AI, the Turing Test, a widely recognized test for assessing intelligence by discerning if responses are of human or machine origin, has been a longstanding objective in AI evolution. It is generally believed among researchers that a computing machine that successfully passes the Turing Test can be considered as intelligent. . Consequently, when viewed from a wider lens, the chronicle of AI can be depicted as the timeline of creation and evaluation of intelligent models and ",
+      "metadata": {
+        "source_file": "3641289.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2024",
+        "detected_language": null,
+        "page_count": 45,
+        "origin_chunk_file": "3641289.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -1.541106641292572,
+      "relevance": 3,
+      "id": "3641289.pdf::2024::85dff6bd2fb4",
+      "rank": 1
+    },
+    {
+      "score": 0.6127892732620239,
+      "text": ". We consistently maintain the related open-source materials at: INTRODUCTION Understanding the essence of intelligence and establishing whether a machine embodies it poses a compelling question for scientists. It is generally agreed upon that authentic intelligence equips us with reasoning capabilities, enables us to test hypotheses, and prepares for future eventualities. . In particular, Artificial Intelligence (AI) researchers focus on the development of machine-based intelligence, as opposed",
+      "metadata": {
+        "source_file": "3641289.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2024",
+        "detected_language": null,
+        "page_count": 45,
+        "origin_chunk_file": "3641289.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.2157165706157684,
+      "relevance": 3,
+      "id": "3641289.pdf::2024::e1d85cdbb466",
+      "rank": 2
+    },
+    {
+      "score": 0.4304761290550232,
+      "text": ". A significant takeaway from previous attempts is the paramount importance of AI evaluation, which serves as a critical tool to identify current system limitations and inform the design of more powerful models. Recently, large language models (LLMs) have incited substantial interest across both academic and industrial domains. . As demonstrated by existing work, the great performance of LLMs has raised promise that they could be AGI in this era. . LLMs possess the capabilities to solve diverse ",
+      "metadata": {
+        "source_file": "3641289.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2024",
+        "detected_language": null,
+        "page_count": 45,
+        "origin_chunk_file": "3641289.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.349812760949135,
+      "relevance": 3,
+      "id": "3641289.pdf::2024::f744bf595495",
+      "rank": 3
+    },
+    {
+      "score": 0.5108852386474609,
+      "text": ". Abstract—Ever since the Turing Test was proposed in the 1950s, humans have explored the mastering of language intelligence by machine.. Language is essentially a complex, intricate system of human expressions governed by grammatical rules. It poses a significant challenge to develop capable artificial intelligence (AI) algorithms for comprehending and grasping a language.",
+      "metadata": {
+        "source_file": "2303.18223v16.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2025",
+        "detected_language": null,
+        "page_count": 144,
+        "origin_chunk_file": "2303.18223v16.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.4004303216934204,
+      "relevance": 3,
+      "id": "2303.18223v16.pdf::2025::63f7ecf49d70",
+      "rank": 4
+    },
+    {
+      "score": 0.6300026178359985,
+      "text": ". In this paper we approach the problem of defining machine intelligence as follows: Section 2 overviews well known theories, definitions and tests of intelligence that have been developed by psychologists. Our objective in this section is to gain an understanding of the essence of intelligence in the broadest possible terms. . In particular we are interested in commonly expressed ideas that could be applied to arbitrary systems and contexts, not just humans. . Section 3 takes these key ideas an",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.4316050708293915,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::b551e995a739",
+      "rank": 5
+    },
+    {
+      "score": 0.49513185024261475,
+      "text": "As such, trustworthy AI in the context of NLG necessitates understanding the areas where such models may be abused, and how these abuses may be prevented (either with detection technologies, moderation mechanisms, government legislation, or platform policies). When discussing attacks, we discuss not only the direct impact on targets, but also the broader impacts of both attacks and mitigation measures on trust.",
+      "metadata": {
+        "source_file": "2210.07321v4.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2023",
+        "detected_language": null,
+        "page_count": 36,
+        "origin_chunk_file": "2210.07321v4.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.8090560734272003,
+      "relevance": 3,
+      "id": "2210.07321v4.pdf::2023::a3adc0e308cc",
+      "rank": 6
+    },
+    {
+      "score": 0.4321948289871216,
+      "text": ". It may be difficult to differentiate those who mean to exploit such systems (e.g., thoughtlessly spam submissions to as many avenues as possible), and those who are relying on AI writing tools to better express themselves.",
+      "metadata": {
+        "source_file": "2210.07321v4.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2023",
+        "detected_language": null,
+        "page_count": 36,
+        "origin_chunk_file": "2210.07321v4.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.860286682844162,
+      "relevance": 3,
+      "id": "2210.07321v4.pdf::2023::7b9fad77ea54",
+      "rank": 7
+    },
+    {
+      "score": 0.5872358679771423,
+      "text": ". In the current paper we explore universal intelligence in much greater detail, in particular the way in which it relates to mainstream views on human intelligence and other proposed definitions of machine intelligence. Human intelligence is an enormously rich topic with a complex intellectual, social and political history. . For an overview the interested reader might want to consult \"Handbook of Intelligence\" . [Ste00] edited by R. J. Sternberg. . Our objective in this section is simply to sk",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.868134990334511,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::175d12dd01ed",
+      "rank": 8
+    },
+    {
+      "score": 0.6319673657417297,
+      "text": "In this paper we approach this problem in the following way: We take a number of well known informal definitions of human intelligence that have been given by experts, and extract their essential features. These are then mathematically formalised to produce a general measure of intelligence for arbitrary machines. . We believe that this equation formally captures the concept of machine intelligence in the broadest reasonable sense. . We then show how this formal definition is related to the theo",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -3.8995459526777267,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::fbf0fc9f1794",
+      "rank": 9
+    },
+    {
+      "score": 0.4826030433177948,
+      "text": "This statement demonstrates that supervised models significantly outperform zero-shot models in terms of performance, highlighting that an increase in parameters does not necessarily guarantee a higher level of social knowledge in this particular scenario.. 3.1.2. Reasoning. The task of reasoning poses significant challenges for an intelligent AI model. . To effectively tackle reasoning tasks, the models need to not only comprehend the provided information but also utilize reasoning and inferenc",
+      "metadata": {
+        "source_file": "3641289.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2024",
+        "detected_language": null,
+        "page_count": 45,
+        "origin_chunk_file": "3641289.chunks.json"
+      },
+      "query": "Define provide a rigorous definition of ai using only the provided context., describe its theoretical foundations, and explain how definitions evolved historically across publications.",
+      "final_score": -4.151256687939167,
+      "relevance": 3,
+      "id": "3641289.pdf::2024::ecc662314003",
+      "rank": 10
+    }
+  ],
+  "model_output": "Artificial Intelligence (AI) is a field focused on developing machine-based intelligence, emulating human reasoning capabilities and the ability to test hypotheses, as well as preparing for future eventualities [1]. The Turing Test, proposed in the 1950s [2], serves as a benchmark for assessing AI's intelligence by discerning if responses are of human or machine origin. A machine that successfully passes this test can be considered intelligent [1]. The theoretical foundations of AI emphasize the importance of developing models capable of understanding and grasping languages, which is a complex system governed by grammatical rules [2]. Over time, researchers have sought to define machine intelligence in various ways, with an emphasis on creating universal definitions applicable to arbitrary systems and contexts [3]. The evolution of AI definitions has been influenced by theories, definitions, and tests of human intelligence developed by psychologists. Early attempts focused on formalizing essential features of human intelligence to produce a general measure of machine intelligence [3]. More recent research highlights the importance of evaluating AI models to identify current system limitations and inform the design of more powerful models [1]. References:\n[1] 3641289.pdf (2024)\n[2] 2303.18223v16.pdf (2025)\n[3] 0712.3329v1.pdf (2007)"
+}

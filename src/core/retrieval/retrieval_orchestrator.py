@@ -1,3 +1,4 @@
+# src/core/retrieval/retrieval_orchestrator.py
 from __future__ import annotations
 import logging
 from typing import List, Dict, Any, Optional
@@ -12,7 +13,7 @@ from src.core.evaluation.utils import make_chunk_id  # # stable id builder for e
 
 
 class RetrievalOrchestrator:
-    """Unified retrieval orchestrator — orchestrates query→retrieval→reranking pipeline."""
+    """Unified retrieval orchestrator — orchestrates query → retrieval → reranking pipeline."""
 
     def __init__(self, config_path: str = "configs/retrieval.yaml"):
         self.logger = logging.getLogger("RetrievalOrchestrator")
@@ -26,7 +27,7 @@ class RetrievalOrchestrator:
         self.top_k = int(opts.get("top_k", 10))
         self.vector_store_dir = str(paths.get("vector_store_dir", "data/vector_store"))
         self.embedding_model = opts.get("embedding_model", "multi-qa-mpnet-base-dot-v1")
-        self.diversify_sources = bool(opts.get("diversify_sources", True))
+        self.diversify_sources_default = bool(opts.get("diversify_sources", True))
         oversample_factor = int(opts.get("oversample_factor", 10))
         self.max_initial = max(self.top_k * oversample_factor, self.top_k * 8)
 
@@ -45,7 +46,7 @@ class RetrievalOrchestrator:
             use_gpu=False,
             similarity_metric="cosine",
             temporal_awareness=False,
-            diversify_sources=self.diversify_sources,
+            diversify_sources=self.diversify_sources_default,
         )
 
         # Cached reranker instance
@@ -54,19 +55,30 @@ class RetrievalOrchestrator:
 
         self.logger.info(
             f"RetrievalOrchestrator initialized | top_k={self.top_k} | "
-            f"diversify_sources={self.diversify_sources} | model={self.embedding_model}"
+            f"default_diversify={self.diversify_sources_default} | model={self.embedding_model}"
         )
 
     # ------------------------------------------------------------------
     def retrieve(self, query: str, intent: str) -> List[Dict[str, Any]]:
-        """Retrieve, rerank and return top-k chunks based on query and intent."""
+        """Retrieve, rerank, and return top-k chunks based on query and detected intent."""
         if not query or not query.strip():
             self.logger.warning("Empty query ignored.")
             return []
 
+        # Intent-dependent configuration
         is_historical = intent == "chronological"
-        self.logger.info(f"Retrieval started | intent={intent} | top_k={self.top_k}")
 
+        # Dynamically control retrieval behaviour
+        self.retriever.temporal_awareness = is_historical
+        self.retriever.diversify_sources = is_historical  # only enable for chronological mode
+
+        self.logger.info(
+            f"Retrieval started | intent={intent} | top_k={self.top_k} | "
+            f"temporal_awareness={self.retriever.temporal_awareness} | "
+            f"diversify_sources={self.retriever.diversify_sources}"
+        )
+
+        # --- initial retrieval ---
         try:
             raw_results = self.retriever.search(
                 query, top_k=self.max_initial, temporal_mode=is_historical
@@ -79,11 +91,11 @@ class RetrievalOrchestrator:
             self.logger.warning("No retrieval results found.")
             return []
 
-        # Inject query text for downstream reranker
+        # --- inject query text for reranker ---
         for r in raw_results:
             r["query"] = query.strip()
 
-        # Choose reranker dynamically
+        # --- dynamic reranker selection ---
         reranker_type = "temporal" if is_historical else "semantic"
         if reranker_type != self._cached_reranker_type or self._cached_reranker is None:
             self._cached_reranker = RerankerFactory.from_config(
@@ -91,29 +103,34 @@ class RetrievalOrchestrator:
             )
             self._cached_reranker_type = reranker_type
 
+        # --- reranking phase ---
         try:
             reranked = self._cached_reranker.rerank(raw_results, top_k=len(raw_results))
         except Exception as e:
             self.logger.exception(f"Reranking failed ({reranker_type}): {e}")
             reranked = raw_results
 
-        # Normalize and sort
+        # --- normalization + sorting ---
         for x in reranked:
             x["final_score"] = float(x.get("final_score", x.get("score", 0.0)) or 0.0)
         reranked.sort(key=lambda x: (x["final_score"], x.get("id", "")), reverse=True)
 
-        # Apply diversity, relevance scoring and ranking
+        # --- apply diversity + relevance scoring ---
         diversified = self._enforce_diversity(reranked, self.top_k, is_historical)
         diversified = self._attach_graded_relevance(diversified, reranked)
         final = self._ensure_exact_k(diversified, self.top_k)
 
+        # --- finalize ranks + log stats ---
         for i, x in enumerate(final, start=1):
             if not x.get("id"):
                 x["id"] = make_chunk_id(x)
             x["rank"] = i
 
         self._log_decade_distribution(final)
-        self.logger.info(f"Retrieval finished | returned={len(final)} | mode={intent}")
+        self.logger.info(
+            f"Retrieval finished | returned={len(final)} | mode={intent} | "
+            f"diversity={self.retriever.diversify_sources}"
+        )
         return final
 
     # ------------------------------------------------------------------
@@ -124,7 +141,8 @@ class RetrievalOrchestrator:
         if not results:
             return []
 
-        if not historical or not self.diversify_sources:
+        if not historical or not self.retriever.diversify_sources:
+            # Simple deduplication without diversity
             seen, out = set(), []
             for r in results:
                 text = (r.get("text") or "").strip()
@@ -210,9 +228,7 @@ class RetrievalOrchestrator:
 
         for x in items:
             s = float(x.get("final_score", x.get("score", 0.0)) or 0.0)
-            x["relevance"] = int(
-                0 if s <= q1 else 1 if s <= q2 else 2 if s <= q3 else 3
-            )
+            x["relevance"] = int(0 if s <= q1 else 1 if s <= q2 else 2 if s <= q3 else 3)
         return items
 
     # ------------------------------------------------------------------

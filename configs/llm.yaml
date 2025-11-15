@@ -1,21 +1,35 @@
+# configs/llm.yaml
 global:
   log_level: INFO
 
+generation:
+  llm:
+    # Active profile for the current run (switch this for model comparison)
+    profile: "mistral_7b"
+
+  # Optional: citation and embedding settings (safe defaults if omitted)
+  citations:
+    style: "ieee"
+
+  faith_embed_model: "multi-qa-mpnet-base-dot-v1"
+
+sampling:
+  # Shared sampling hyperparameters for *all* models (fair comparison)
+  temperature: 0.10
+  max_tokens: 2048
+
 profiles:
-  default:
-    model: "mistral:7b-instruct"
-    temperature: 0.25
-    max_tokens: 1024
+  # Small model, good as lower bound
+  phi3_4b:
+    model: "phi3:3.8b-mini-instruct"
     auto_pull: true
 
-  concise:
-    model: "mistral:latest"
-    temperature: 0.3
-    max_tokens: 512
-    auto_pull: false
+  # Medium model – your default for now
+  mistral_7b:
+    model: "mistral:7b-instruct"
+    auto_pull: true
 
-  reasoning:
-    model: "llama3:8b"               # optional, falls du noch ziehen möchtest
-    temperature: 0.15
-    max_tokens: 2048
+  # Larger model – for “upper bound” comparison
+  llama3_8b:
+    model: "llama3:8b-instruct"
     auto_pull: true

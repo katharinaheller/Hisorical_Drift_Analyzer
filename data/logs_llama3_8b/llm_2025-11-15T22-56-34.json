@@ -1,0 +1,191 @@
+{
+  "timestamp": "2025-11-15T22-56-34",
+  "query_id": "Compare_and_contrast_the_main_theoretical_perspectives_on_outline_the_core_subfi",
+  "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+  "query_refined": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+  "intent": "comparative",
+  "prompt_final_to_llm": "You are a comparative analyst. Compare major frameworks or schools of thought, specifying explicit historical information only when stated in the provided snippets. Never infer missing event years. Use numeric IEEE-style citations [1], [2], etc., for statements supported by the provided snippets. Each number corresponds to one unique PDF listed below. Multiple snippets originating from the same PDF share the same number. Never assign multiple citation numbers to the same source.\n\n**Your final answer MUST end with a separate section titled 'References'.**\nThis section MUST list all unique PDFs exactly once, in the following strict format:\n[n] FILENAME.pdf (YEAR)\n\nDo not fabricate author names, journals, or article titles — only use the given filename and metadata year.\n\nTemporal Attribution Rules:\n1. You may ONLY use event years that appear explicitly in the snippet text.\n2. If the snippet text explicitly contains a year (e.g., 'In the 1950s', 'In 1976'), treat that as the factual historical reference.\n3. If a snippet DOES NOT contain an explicit event year, you MUST NOT guess, infer, approximate, or estimate any year.\n   Instead, write exactly: '(event year not stated; described in YEAR PDF [n])'.\n4. The metadata publication year indicates only when the PDF was published, not when the events occurred.\n5. Never replace or override an explicit event year with a metadata year.\n6. Never deduce approximate historical periods from textual content (e.g., never infer '1990s' unless explicitly stated).\n\nOutput Structuring Guidelines:\n- For every key historical or conceptual point:\n  • If an explicit event year exists in the snippet → include it.\n  • If no explicit event year exists → write '(event year not stated; described in YEAR PDF [n])'.\n- Recommended dual-year structure:\n  • (1950s; described in 2025 PDF [7]) The Turing Test was proposed as a benchmark.\nThis dual timestamping ensures full temporal grounding without hallucination.\n\nIMPORTANT:\n**Your output MUST end with a final section titled 'References'.**\nThis section must list all unique PDFs exactly once in IEEE numeric format.\n\nRefined query:\nCompare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.\n\nYou are given the following context snippets from historical AI-related documents.\n\nContext snippets:\n[1] 0712.3329v1.pdf (2007)\n. In the current paper we explore universal intelligence in much greater detail, in particular the way in which it relates to mainstream views on human intelligence and other proposed definitions of machine intelligence. Human intelligence is an enormously rich topic with a complex intellectual, social and political history. . For an overview the interested reader might want to consult \"Handbook of Intelligence\" . [Ste00] edited by R. J. Sternberg. . Our objective in this section is simply to sk\n\n[1] 0712.3329v1.pdf (2007)\n. We are particularly interested in common themes and general perspectives on intelligence that could be applicable to many kinds of systems, as these will form the foundation of our definition of machine intelligence in the next section.. children. [Bin11]. It was found that Binet's test results were a good predictor of children's academic performance. . Lewis Terman of Stanford\n\n[2] 3641289.pdf (2024)\n. We consistently maintain the related open-source materials at: INTRODUCTION Understanding the essence of intelligence and establishing whether a machine embodies it poses a compelling question for scientists. It is generally agreed upon that authentic intelligence equips us with reasoning capabilities, enables us to test hypotheses, and prepares for future eventualities. . In particular, Artificial Intelligence (AI) researchers focus on the development of machine-based intelligence, as opposed\n\n[3] 2210.07321v4.pdf (2023)\n. To summarize, the major contributions of this work are as follows: • The most complete survey of machine generated text detection to date, including previously omitted feature-based work and findings from recent contemporary research.. • The first detailed review of the threat models enabled by machine generated text, at a critical juncture where NLG models and tools are rapidly improving and proliferating. . • . A meaningful exploration of both topics through the lens of Trustworthy AI (TAI),\n\n[3] 2210.07321v4.pdf (2023)\n. It may be difficult to differentiate those who mean to exploit such systems (e.g., thoughtlessly spam submissions to as many avenues as possible), and those who are relying on AI writing tools to better express themselves.\n\n[4] 1910.10683v4.pdf (2023)\n. With this unified approach, we can compare the effectiveness of different transfer learning objectives, unlabeled data sets, and other factors, while exploring the limits of transfer learning for NLP by scaling up models and data sets beyond what has previously been considered. We emphasize that our goal is not to propose new methods but instead to provide a comprehensive perspective on where the field stands. . As such, our work primarily comprises a survey, exploration, and empirical compari\n\n[2] 3641289.pdf (2024)\nThis statement demonstrates that supervised models significantly outperform zero-shot models in terms of performance, highlighting that an increase in parameters does not necessarily guarantee a higher level of social knowledge in this particular scenario.. 3.1.2. Reasoning. The task of reasoning poses significant challenges for an intelligent AI model. . To effectively tackle reasoning tasks, the models need to not only comprehend the provided information but also utilize reasoning and inferenc\n\n[5] 2303.18223v16.pdf (2025)\nRecently, the research on LLMs has been largely advanced by both academia and industry, and a remarkable progress is the launch of ChatGPT (a powerful AI chatbot developed based on LLMs), which has attracted widespread attention from society. The technical evolution of LLMs has been making an important impact on the entire AI community, which would revolutionize the way how we develop and use AI algorithms. . Considering this rapid technical progress, in this survey, we review the recent advance\n\n[1] 0712.3329v1.pdf (2007)\n. In this paper we approach the problem of defining machine intelligence as follows: Section 2 overviews well known theories, definitions and tests of intelligence that have been developed by psychologists. Our objective in this section is to gain an understanding of the essence of intelligence in the broadest possible terms. . In particular we are interested in commonly expressed ideas that could be applied to arbitrary systems and contexts, not just humans. . Section 3 takes these key ideas an\n\n[1] 0712.3329v1.pdf (2007)\n. A fundamental problem in artificial intelligence is that nobody really knows what intelligence is.. The problem is especially acute when we need to consider artificial systems which are significantly different to humans.\n\nNow answer the refined query using ONLY the context above. Use IEEE-style numeric citations [n]. If a claim lacks sufficient evidence, write 'insufficient evidence'.\n\nReference index:\n[1] 0712.3329v1.pdf (2007)\n[2] 3641289.pdf (2024)\n[3] 2210.07321v4.pdf (2023)\n[4] 1910.10683v4.pdf (2023)\n[5] 2303.18223v16.pdf (2025)\n\nIMPORTANT OUTPUT REQUIREMENTS:\nYour final answer MUST end with a separate section titled 'References'.\nThis final section MUST list all unique PDFs exactly once in the format:\n[n] FILENAME.pdf (YEAR)\nDo NOT omit this section. Do NOT invent filenames or years.\nThe 'References' section MUST appear at the very end of your output.",
+  "retrieved_chunks": [
+    {
+      "score": 0.5432686805725098,
+      "text": ". In the current paper we explore universal intelligence in much greater detail, in particular the way in which it relates to mainstream views on human intelligence and other proposed definitions of machine intelligence. Human intelligence is an enormously rich topic with a complex intellectual, social and political history. . For an overview the interested reader might want to consult \"Handbook of Intelligence\" . [Ste00] edited by R. J. Sternberg. . Our objective in this section is simply to sk",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -5.463565945625305,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::175d12dd01ed",
+      "rank": 1
+    },
+    {
+      "score": 0.48194122314453125,
+      "text": ". We are particularly interested in common themes and general perspectives on intelligence that could be applicable to many kinds of systems, as these will form the foundation of our definition of machine intelligence in the next section.. children. [Bin11]. It was found that Binet's test results were a good predictor of children's academic performance. . Lewis Terman of Stanford",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -5.797756671905518,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::ea49dafed84b",
+      "rank": 2
+    },
+    {
+      "score": 0.4838184714317322,
+      "text": ". We consistently maintain the related open-source materials at: INTRODUCTION Understanding the essence of intelligence and establishing whether a machine embodies it poses a compelling question for scientists. It is generally agreed upon that authentic intelligence equips us with reasoning capabilities, enables us to test hypotheses, and prepares for future eventualities. . In particular, Artificial Intelligence (AI) researchers focus on the development of machine-based intelligence, as opposed",
+      "metadata": {
+        "source_file": "3641289.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2024",
+        "detected_language": null,
+        "page_count": 45,
+        "origin_chunk_file": "3641289.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -5.938369408249855,
+      "relevance": 3,
+      "id": "3641289.pdf::2024::e1d85cdbb466",
+      "rank": 3
+    },
+    {
+      "score": 0.547501266002655,
+      "text": ". To summarize, the major contributions of this work are as follows: • The most complete survey of machine generated text detection to date, including previously omitted feature-based work and findings from recent contemporary research.. • The first detailed review of the threat models enabled by machine generated text, at a critical juncture where NLG models and tools are rapidly improving and proliferating. . • . A meaningful exploration of both topics through the lens of Trustworthy AI (TAI),",
+      "metadata": {
+        "source_file": "2210.07321v4.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2023",
+        "detected_language": null,
+        "page_count": 36,
+        "origin_chunk_file": "2210.07321v4.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -6.237692669034004,
+      "relevance": 3,
+      "id": "2210.07321v4.pdf::2023::f2298e5175a1",
+      "rank": 4
+    },
+    {
+      "score": 0.46209415793418884,
+      "text": ". It may be difficult to differentiate those who mean to exploit such systems (e.g., thoughtlessly spam submissions to as many avenues as possible), and those who are relying on AI writing tools to better express themselves.",
+      "metadata": {
+        "source_file": "2210.07321v4.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2023",
+        "detected_language": null,
+        "page_count": 36,
+        "origin_chunk_file": "2210.07321v4.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -6.4362748041749,
+      "relevance": 3,
+      "id": "2210.07321v4.pdf::2023::7b9fad77ea54",
+      "rank": 5
+    },
+    {
+      "score": 0.46449175477027893,
+      "text": ". With this unified approach, we can compare the effectiveness of different transfer learning objectives, unlabeled data sets, and other factors, while exploring the limits of transfer learning for NLP by scaling up models and data sets beyond what has previously been considered. We emphasize that our goal is not to propose new methods but instead to provide a comprehensive perspective on where the field stands. . As such, our work primarily comprises a survey, exploration, and empirical compari",
+      "metadata": {
+        "source_file": "1910.10683v4.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2023",
+        "detected_language": null,
+        "page_count": 67,
+        "origin_chunk_file": "1910.10683v4.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -6.704138062894344,
+      "relevance": 3,
+      "id": "1910.10683v4.pdf::2023::665a1633ba5c",
+      "rank": 6
+    },
+    {
+      "score": 0.5262808799743652,
+      "text": "This statement demonstrates that supervised models significantly outperform zero-shot models in terms of performance, highlighting that an increase in parameters does not necessarily guarantee a higher level of social knowledge in this particular scenario.. 3.1.2. Reasoning. The task of reasoning poses significant challenges for an intelligent AI model. . To effectively tackle reasoning tasks, the models need to not only comprehend the provided information but also utilize reasoning and inferenc",
+      "metadata": {
+        "source_file": "3641289.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2024",
+        "detected_language": null,
+        "page_count": 45,
+        "origin_chunk_file": "3641289.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -6.823209643363953,
+      "relevance": 3,
+      "id": "3641289.pdf::2024::ecc662314003",
+      "rank": 7
+    },
+    {
+      "score": 0.4772888422012329,
+      "text": "Recently, the research on LLMs has been largely advanced by both academia and industry, and a remarkable progress is the launch of ChatGPT (a powerful AI chatbot developed based on LLMs), which has attracted widespread attention from society. The technical evolution of LLMs has been making an important impact on the entire AI community, which would revolutionize the way how we develop and use AI algorithms. . Considering this rapid technical progress, in this survey, we review the recent advance",
+      "metadata": {
+        "source_file": "2303.18223v16.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2025",
+        "detected_language": null,
+        "page_count": 144,
+        "origin_chunk_file": "2303.18223v16.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -6.918917268514633,
+      "relevance": 3,
+      "id": "2303.18223v16.pdf::2025::ea3b381a808a",
+      "rank": 8
+    },
+    {
+      "score": 0.49542540311813354,
+      "text": ". In this paper we approach the problem of defining machine intelligence as follows: Section 2 overviews well known theories, definitions and tests of intelligence that have been developed by psychologists. Our objective in this section is to gain an understanding of the essence of intelligence in the broadest possible terms. . In particular we are interested in commonly expressed ideas that could be applied to arbitrary systems and contexts, not just humans. . Section 3 takes these key ideas an",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -7.02971239387989,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::b551e995a739",
+      "rank": 9
+    },
+    {
+      "score": 0.46742933988571167,
+      "text": ". A fundamental problem in artificial intelligence is that nobody really knows what intelligence is.. The problem is especially acute when we need to consider artificial systems which are significantly different to humans.",
+      "metadata": {
+        "source_file": "0712.3329v1.pdf",
+        "title": null,
+        "authors": null,
+        "year": "2007",
+        "detected_language": null,
+        "page_count": 49,
+        "origin_chunk_file": "0712.3329v1.chunks.json"
+      },
+      "query": "Compare and contrast the main theoretical perspectives on outline the core subfields of ai mentioned in the corpus., grounding historical claims only in explicit snippet content.",
+      "final_score": -7.058342173695564,
+      "relevance": 3,
+      "id": "0712.3329v1.pdf::2007::763164362c30",
+      "rank": 10
+    }
+  ],
+  "model_output": "Comparative Analysis of Main Theoretical Perspectives on AI and its Core Subfields:\n\n1. The Turing Test, proposed in 1950 [1], is a benchmark for measuring a machine's ability to imitate human intelligence. However, the paper does not provide explicit details about the test or its context. 2. Binet's Intelligence Quotient (IQ) test was developed to predict children's academic performance in the early 1900s [1]. The test results were found to be a good indicator of children's cognitive abilities. 3. In contemporary AI research, there is a focus on developing machine-based intelligence [2]. Authentic intelligence, as defined in the context, equips systems with reasoning capabilities, hypothesis testing, and preparedness for future eventualities. 4. A significant advancement in recent years has been the development of Large Language Models (LLMs) [5]. The paper mentions ChatGPT, a powerful AI chatbot based on LLMs, which was launched recently and attracted widespread attention. 5. In the context of defining machine intelligence, psychologists' theories, definitions, and tests are overviewed [1]. However, no specific definitions or theories are provided. 6. The paper highlights that understanding the essence of intelligence and determining whether a machine embodies it is a compelling question for scientists [2]. 7. In the context of AI, reasoning poses significant challenges for intelligent models due to the need to comprehend information and utilize reasoning and inference [2]. 8. The paper provides a comprehensive perspective on the state of Transfer Learning for Natural Language Processing (NLP) [4], emphasizing comparisons between different transfer learning objectives, unlabeled data sets, and other factors. 9. In some scenarios, supervised models significantly outperform zero-shot models in terms of performance [2]. However, the context does not provide details about these models or their specific differences. References:\n[1] 0712.3329v1.pdf (2007)\n[2] 3641289.pdf (2024)\n[3] 2210.07321v4.pdf (2023)\n[4] 1910.10683v4.pdf (2023)\n[5] 2303.18223v16.pdf (2025)"
+}

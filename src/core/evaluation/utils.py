@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import Dict, Any
+import hashlib
 
 def make_chunk_id(chunk: Dict[str, Any]) -> str:
-    # Build a stable chunk id from metadata and content hash
     meta = chunk.get("metadata", {}) or {}
     src = meta.get("source_file") or meta.get("title") or "unknown"
     year = meta.get("year", "na")
-    text = (chunk.get("text") or "")[:120]
-    h = abs(hash(text)) % (10**8)
+    text = (chunk.get("text") or "")[:200]
+    h = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:12]
     return f"{src}::{year}::{h}"

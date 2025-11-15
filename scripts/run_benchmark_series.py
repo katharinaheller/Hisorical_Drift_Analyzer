@@ -18,7 +18,7 @@ def run_cmd(cmd: list[str]) -> None:
     start = time.time()
     p = subprocess.Popen(cmd)
     p.wait()
-    print(f"⏱️ Finished in {time.time() - start:.1f}s\n")
+    print(f"⏱Finished in {time.time() - start:.1f}s\n")
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Automated multi-stage benchmark runner.")

@@ -145,8 +145,9 @@ if __name__ == "__main__":
 # scripts/run_full_benchmark.py
 from __future__ import annotations
 
-# --- ensure project root is on sys.path ---
-import sys, os
+# # Ensure project root on sys.path
+import sys
+import os
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -157,112 +158,546 @@ import time
 import random
 import numpy as np
 from pathlib import Path
+import shutil
 
 from src.core.llm.llm_orchestrator import LLMOrchestrator
+from src.core.prompt.prompt_orchestrator import PromptOrchestrator
 from src.core.evaluation.evaluation_orchestrator import EvaluationOrchestrator
 from src.core.evaluation.evaluation_visualizer import EvaluationVisualizer, VizConfig
 from src.core.evaluation.evaluation_table_exporter import EvaluationTableExporter
+
+
+def _count_files(dir_path: Path, pattern: str) -> int:
+    # Counts files using a glob pattern
+    return sum(1 for _ in dir_path.glob(pattern))
+
+
+def _load_json(path: Path) -> dict | None:
+    # Safe JSON loading
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _clean_directory(path: Path) -> None:
+    # Deletes all contents of a directory, recreates it
+    if path.exists():
+        for f in path.glob("*"):
+            if f.is_file():
+                f.unlink()
+            else:
+                shutil.rmtree(f)
+    path.mkdir(parents=True, exist_ok=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Full automated benchmark: LLM → Evaluation → Visualization → Table export."
     )
-    parser.add_argument("--prompt_file", type=str, default="data/prompts/benchmark_prompts.txt",
-                        help="Path to file containing one prompt per line.")
-    parser.add_argument("--num_prompts", type=int, default=100,
-                        help="Number of prompts to process.")
-    parser.add_argument("--logs_dir", type=str, default="data/logs",
-                        help="Directory for raw LLM logs.")
-    parser.add_argument("--eval_dir", type=str, default="data/eval_logs",
-                        help="Directory for evaluation results.")
-    parser.add_argument("--charts_dir", type=str, default="data/eval_charts",
-                        help="Directory for plots, tables, and reports.")
-    parser.add_argument("--k", type=int, default=10,
-                        help="NDCG cutoff parameter k.")
-    parser.add_argument("--bootstrap_iters", type=int, default=2000,
-                        help="Bootstrap iterations for confidence intervals.")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for deterministic reproducibility.")
+    parser.add_argument("--prompt_file", type=str, default="data/prompts/benchmark_prompts.txt")
+    parser.add_argument("--num_prompts", type=int, default=100)
+    parser.add_argument("--logs_dir", type=str, default="data/logs")
+    parser.add_argument("--eval_dir", type=str, default="data/eval_logs")
+    parser.add_argument("--charts_dir", type=str, default="data/eval_charts")
+    parser.add_argument("--k", type=int, default=10)
+    parser.add_argument("--bootstrap_iters", type=int, default=2000)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--intent",
+        type=str,
+        default=None,
+        choices=["conceptual", "chronological", "analytical", "comparative"],
+        help="Optional fixed intent; if omitted, automatic classification is used."
+    )
     args = parser.parse_args()
 
-    # ------------------------------------------------------------------
-    # Deterministic randomness for reproducibility
     random.seed(args.seed)
     np.random.seed(args.seed)
 
     start_time = time.time()
 
-    # Ensure directories exist
-    Path(args.logs_dir).mkdir(parents=True, exist_ok=True)
-    Path(args.eval_dir).mkdir(parents=True, exist_ok=True)
-    Path(args.charts_dir).mkdir(parents=True, exist_ok=True)
+    logs_dir = Path(args.logs_dir)
+    eval_dir = Path(args.eval_dir)
+    charts_dir = Path(args.charts_dir)
 
-    # ------------------------------------------------------------------
+    # Clean deterministic directories
+    _clean_directory(logs_dir)
+    _clean_directory(eval_dir)
+    _clean_directory(charts_dir)
+
+    print("=== Benchmark configuration ===")
+    print(f"prompt_file  : {Path(args.prompt_file).resolve()}")
+    print(f"num_prompts  : {args.num_prompts}")
+    print(f"logs_dir     : {logs_dir.resolve()}")
+    print(f"eval_dir     : {eval_dir.resolve()}")
+    print(f"charts_dir   : {charts_dir.resolve()}")
+    print(f"k            : {args.k}")
+    print(f"boot iters   : {args.bootstrap_iters}")
+    print(f"seed         : {args.seed}")
+    print(f"intent       : {args.intent or 'auto'}")
+    print()
+
     print("=== Phase 1: LLM Generation ===")
     prompt_file = Path(args.prompt_file)
     if not prompt_file.exists():
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
 
-    prompts = [ln.strip() for ln in prompt_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    prompts = [
+        ln.strip()
+        for ln in prompt_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
     prompts = prompts[: args.num_prompts]
-    print(f"Loaded {len(prompts)} prompts for benchmark.\n")
+    print(f"Loaded {len(prompts)} prompts.\n")
 
-    llm_orch = LLMOrchestrator()
+    before_logs = _count_files(logs_dir, "llm_*.json")
+
+    llm_orch = LLMOrchestrator(logs_dir=str(logs_dir))
+    prompt_orch = PromptOrchestrator()
+
     for idx, prompt in enumerate(prompts, start=1):
         print(f"[{idx}/{len(prompts)}] {prompt}")
-        try:
-            query_obj = {"processed_query": prompt, "intent": "conceptual"}
-            _ = llm_orch.process_query(query_obj)
-        except Exception as e:
-            (Path(args.logs_dir) / f"error_{idx}.json").write_text(
-                json.dumps({"prompt": prompt, "error": str(e)}, indent=2),
-                encoding="utf-8",
-            )
-    llm_orch.close()
-    print("LLM benchmark phase completed.\n")
 
-    # ------------------------------------------------------------------
-    print("=== Phase 2: Evaluation Metrics ===")
-    evaluator = EvaluationOrchestrator(output_dir=args.eval_dir, k=args.k)
-    summary_eval = evaluator.evaluate_batch_from_logs(logs_dir=args.logs_dir)
+        try:
+            if args.intent:
+                query_obj = {"processed_query": prompt.strip(), "intent": args.intent}
+            else:
+                pre = prompt_orch.preprocessor.process(prompt)
+                intent = pre["intent"]
+                refined = prompt_orch.prompt_builder.reformulate_query(pre["processed_query"], intent)
+                query_obj = {"processed_query": refined, "intent": intent}
+                prompt_orch.logger.info(f"Auto intent='{intent}' → refined query='{refined}'")
+
+            _ = llm_orch.process_query(query_obj)
+
+        except Exception as e:
+            (logs_dir / f"error_{idx}.json").write_text(
+                json.dumps({"prompt": prompt, "error": str(e)}, indent=2),
+                encoding="utf-8"
+            )
+
+    if hasattr(llm_orch, "close"):
+        try:
+            llm_orch.close()
+        except Exception:
+            pass
+
+    after_logs = _count_files(logs_dir, "llm_*.json")
+    produced = max(0, after_logs - before_logs)
+    print(f"LLM phase completed. Produced {produced} valid logs.\n")
+
+    if produced == 0:
+        print("No LLM outputs. Stopping.")
+        return
+
+    print("=== Phase 2: Evaluation ===")
+
+    model_name = Path(args.logs_dir).name.replace("logs_", "") or "benchmark"
+
+    evaluator = EvaluationOrchestrator(
+        base_output_dir=str(eval_dir),
+        model_name=model_name,
+        k=args.k
+    )
+
+    summary_eval = evaluator.evaluate_batch_from_logs(logs_dir=str(logs_dir))
     print(json.dumps(summary_eval, indent=2))
 
-    # ------------------------------------------------------------------
-    print("=== Phase 3: Visualization & Statistical Analysis ===")
-    cfg = VizConfig(
-        logs_dir=args.eval_dir,
-        out_dir=args.charts_dir,
-        bootstrap_iters=args.bootstrap_iters
-    )
+    if not summary_eval or int(summary_eval.get("files", 0)) == 0:
+        print("No evaluatable data. Stopping before visualization.")
+        return
+
+    print("=== Phase 3: Visualization ===")
+    cfg = VizConfig(logs_dir=str(eval_dir), out_dir=str(charts_dir), bootstrap_iters=args.bootstrap_iters)
     viz = EvaluationVisualizer(cfg)
     summary_viz = viz.run_all()
     print(json.dumps(summary_viz, indent=2))
 
-    # ------------------------------------------------------------------
+    summary_json = charts_dir / "summary.json"
+    summary = _load_json(summary_json)
+    has_summary = bool(summary and "ndcg@k_mean" in summary and "faith_mean" in summary)
+
     print("=== Phase 4: Table Export ===")
-    exporter = EvaluationTableExporter(charts_dir=args.charts_dir)
-    export_paths = exporter.export()
-    print("Generated tables:")
-    for k, v in export_paths.items():
-        if k != "rows":
-            print(f"  {k}: {v}")
+    if has_summary:
+        exp = EvaluationTableExporter(charts_dir=str(charts_dir))
+        try:
+            paths = exp.export()
+            for k, v in paths.items():
+                if k != "rows":
+                    print(f"{k}: {v}")
+        except Exception as e:
+            print(f"Table export failed: {e}")
+    else:
+        print("Skipping table export (no summary).")
 
-    # ------------------------------------------------------------------
-    # 🔧 Phase 5: PDF Report Generation (unique per n and seed)
-    print("=== Phase 5: PDF Report Generation ===")
-    from src.core.evaluation.report_builder import ReportBuilder
-    rb = ReportBuilder(charts_dir=args.charts_dir)
-    pdf_path = rb.build(custom_name=f"benchmark_report_n{args.num_prompts}_seed{args.seed}.pdf")
-    print(f"Generated PDF report: {pdf_path}")
+    print("=== Phase 5: PDF Report ===")
+    if has_summary:
+        try:
+            from src.core.evaluation.report_builder import ReportBuilder
+            rb = ReportBuilder(charts_dir=str(charts_dir))
+            pdf_path = rb.build(custom_name=f"benchmark_report_n{args.num_prompts}_seed{args.seed}.pdf")
+            print(f"Generated PDF report: {pdf_path}")
+        except Exception as e:
+            print(f"PDF generation failed: {e}")
+    else:
+        print("Skipping PDF generation.")
 
-    # ------------------------------------------------------------------
-    elapsed = time.time() - start_time
-    print("\n=== BENCHMARK COMPLETED ===")
-    print(f"Processed {len(prompts)} prompts in {elapsed/60:.1f} minutes total.")
-    print(f"All outputs available in:\n  {args.eval_dir}\n  {args.charts_dir}")
+    elapsed = (time.time() - start_time) / 60
+    print(f"\n=== BENCHMARK COMPLETE ({elapsed:.1f} min) ===")
+    print(f"Results in: {eval_dir} | {charts_dir}")
 
 
 if __name__ == "__main__":
     main()
+
+==== C:\Users\katha\historical-drift-analyzer\scripts\run_full_multi_evaluation.py ==== 
+# scripts/run_multi_model_benchmark.py
+from __future__ import annotations
+import sys
+import os
+import subprocess
+import time
+from pathlib import Path
+import pandas as pd
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ensure project root on path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# traffic-light colors consistent with your visualizer
+FAITH_COLORS = {
+    "high": "#1a9850",
+    "medium": "#fee08b",
+    "low": "#d73027",
+}
+
+FAITH_LABELS = {
+    "high": "High (≥0.80)",
+    "medium": "Medium (0.50–0.79)",
+    "low": "Low (<0.50)",
+}
+
+
+def run(cmd: list[str]) -> None:
+    # execute subprocess and wait
+    print(">>>", " ".join(cmd))
+    start = time.time()
+    p = subprocess.Popen(cmd)
+    p.wait()
+    print(f"finished in {time.time() - start:.1f}s\n")
+
+
+def load_eval_df(eval_dir: Path) -> pd.DataFrame:
+    # load *_evaluation.json rows into one dataframe
+    rows = []
+    for fp in eval_dir.glob("*_evaluation.json"):
+        try:
+            d = json.loads(fp.read_text(encoding="utf-8"))
+            rows.append({
+                "query_id": d.get("query_id"),
+                "ndcg": float(d.get("ndcg@k", np.nan)),
+                "faith": float(d.get("faithfulness", np.nan)),
+                "model": d.get("model_name", "unknown"),
+            })
+        except Exception:
+            continue
+    return pd.DataFrame(rows)
+
+
+def faith_band(f: float) -> str:
+    # map continuous score to qualitative band
+    if np.isnan(f):
+        return "missing"
+    if f >= 0.80:
+        return "high"
+    if f >= 0.50:
+        return "medium"
+    return "low"
+
+
+def plot_global_comparison(df: pd.DataFrame, out_path: Path) -> None:
+    # group counts by model + faithfulness band
+    df["band"] = df["faith"].apply(faith_band)
+
+    models = sorted(df["model"].unique())
+    bands = ["high", "medium", "low"]
+
+    counts = (
+        df.groupby(["model", "band"])["query_id"]
+        .count()
+        .unstack(fill_value=0)
+        .reindex(columns=bands, fill_value=0)
+    )
+
+    x = np.arange(len(models))
+    width = 0.22
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+
+    for i, b in enumerate(bands):
+        offsets = x + (i - 1) * width
+        ax.bar(
+            offsets,
+            counts[b].values,
+            width=width,
+            color=FAITH_COLORS[b],
+            edgecolor="black",
+            alpha=0.9,
+            label=FAITH_LABELS[b]
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(models, rotation=10)
+    ax.set_ylabel("Number of queries")
+    ax.set_title("Faithfulness band comparison across models")
+    ax.legend(frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(out_path.with_suffix(".png"), dpi=150, bbox_inches="tight")
+    fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
+    plt.close(fig)
+
+
+def main() -> None:
+    models = {
+        "phi3_4b":    "phi3-4b",
+        "mistral_7b": "mistral-7b-instruct",
+        "llama3_8b":  "llama3-8b-instruct",
+    }
+
+    num_prompts = 100
+    prompt_file = "data/prompts/benchmark_prompts.txt"
+
+    all_dfs = []
+
+    for profile, model in models.items():
+        print(f"=== RUNNING MODEL: {profile} ===")
+
+        logs   = f"data/logs_{profile}"
+        evals  = f"data/eval_logs_{profile}"
+        charts = f"data/eval_charts_{profile}"
+
+        cmd = [
+            "poetry", "run", "python", "scripts/run_full_benchmark.py",
+            "--prompt_file", prompt_file,
+            "--num_prompts", str(num_prompts),
+            "--logs_dir", logs,
+            "--eval_dir", evals,
+            "--charts_dir", charts,
+            "--k", "10",
+            "--bootstrap_iters", "2000",
+            "--seed", "42",
+        ]
+        run(cmd)
+
+        df = load_eval_df(Path(evals))
+        df["model"] = profile
+        all_dfs.append(df)
+
+    df_all = pd.concat(all_dfs, ignore_index=True)
+    outdir = Path("data/model_comparison")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    df_all.to_csv(outdir / "all_models_evaluation.csv", index=False, encoding="utf-8")
+
+    plot_global_comparison(df_all, outdir / "faithfulness_model_comparison")
+
+    print("Done. Outputs:")
+    print("→ Combined CSV:", outdir / "all_models_evaluation.csv")
+    print("→ Comparison plots:", outdir / "faithfulness_model_comparison.*")
+
+
+if __name__ == "__main__":
+    main()
+
+==== C:\Users\katha\historical-drift-analyzer\scripts\run_multi_model_benchmark.py ==== 
+from __future__ import annotations
+import sys
+import os
+import subprocess
+import time
+from pathlib import Path
+import pandas as pd
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ensure project root on path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# PDF builder
+from src.core.evaluation.multi_model_report_builder import MultiModelReportBuilder
+
+# unified colors
+FAITH_COLORS = {
+    "high": "#1a9850",
+    "medium": "#fee08b",
+    "low": "#d73027",
+}
+
+FAITH_LABELS = {
+    "high": "High (≥0.80)",
+    "medium": "Medium (0.50–0.79)",
+    "low": "Low (<0.50)",
+}
+
+
+def run(cmd: list[str]) -> None:
+    # Execute subprocess
+    print(">>>", " ".join(cmd))
+    start = time.time()
+    p = subprocess.Popen(cmd)
+    p.wait()
+    print(f"finished in {time.time() - start:.1f}s\n")
+
+
+# robust loader
+def load_eval_df(eval_dir: Path) -> pd.DataFrame:
+    rows = []
+    for fp in eval_dir.glob("*_evaluation.json"):
+        try:
+            d = json.loads(fp.read_text(encoding="utf-8"))
+            nd = d.get("ndcg@k")
+            fa = d.get("faithfulness")
+            rows.append({
+                "query_id": d.get("query_id"),
+                "ndcg": float(nd) if nd is not None else np.nan,
+                "faith": float(fa) if fa is not None else np.nan,
+                "model": d.get("model_name", "unknown"),
+            })
+        except Exception:
+            continue
+    df = pd.DataFrame(rows)
+    if "faith" not in df.columns:
+        df["faith"] = np.nan
+    return df
+
+
+def faith_band(f: float) -> str:
+    if np.isnan(f):
+        return "missing"
+    if f >= 0.80:
+        return "high"
+    if f >= 0.50:
+        return "medium"
+    return "low"
+
+
+def plot_global_comparison(df: pd.DataFrame, out_path: Path) -> None:
+    df["band"] = df["faith"].apply(faith_band)
+
+    models = sorted(df["model"].unique())
+    bands = ["high", "medium", "low"]
+
+    counts = (
+        df.groupby(["model", "band"])["query_id"]
+        .count()
+        .unstack(fill_value=0)
+        .reindex(columns=bands, fill_value=0)
+    )
+
+    x = np.arange(len(models))
+    width = 0.22
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+
+    for i, b in enumerate(bands):
+        offsets = x + (i - 1) * width
+        ax.bar(
+            offsets,
+            counts[b].values,
+            width=width,
+            color=FAITH_COLORS[b],
+            edgecolor="black",
+            alpha=0.9,
+            label=FAITH_LABELS[b]
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(models, rotation=10)
+    ax.set_ylabel("Number of queries")
+    ax.set_title("Faithfulness band comparison across models")
+    ax.legend(frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(out_path.with_suffix(".png"), dpi=150, bbox_inches="tight")
+    fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
+    plt.close(fig)
+
+
+def main() -> None:
+
+    models = {
+        "phi3_4b":    "phi3-4b",
+        "mistral_7b": "mistral-7b-instruct",
+        "llama3_8b":  "llama3-8b-instruct",
+    }
+
+    num_prompts = 100
+    prompt_file = "data/prompts/benchmark_prompts.txt"
+    all_dfs = []
+
+    for profile, model in models.items():
+        print(f"=== RUNNING MODEL: {profile} ===")
+
+        logs = f"data/logs_{profile}"
+        evals = f"data/eval_logs_{profile}"
+        charts = f"data/eval_charts_{profile}"
+
+        for d in [logs, evals, charts]:
+            p = Path(d)
+            if p.exists():
+                for f in p.glob("*"):
+                    if f.is_file():
+                        f.unlink()
+                    else:
+                        import shutil
+                        shutil.rmtree(f)
+            p.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            "poetry", "run", "python", "scripts/run_full_benchmark.py",
+            "--prompt_file", prompt_file,
+            "--num_prompts", str(num_prompts),
+            "--logs_dir", logs,
+            "--eval_dir", evals,
+            "--charts_dir", charts,
+            "--k", "10",
+            "--bootstrap_iters", "2000",
+            "--seed", "42",
+        ]
+        run(cmd)
+
+        df = load_eval_df(Path(evals))
+        df["model"] = profile
+        all_dfs.append(df)
+
+    df_all = pd.concat(all_dfs, ignore_index=True)
+
+    outdir = Path("data/model_comparison")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    df_all.to_csv(outdir / "all_models_evaluation.csv", index=False, encoding="utf-8")
+
+    plot_global_comparison(df_all, outdir / "faithfulness_model_comparison")
+
+    rb = MultiModelReportBuilder(base_dir="data")
+    pdf_path = rb.build(name="multi_model_benchmark_report.pdf")
+
+    print("\nAll done.")
+    print("→ CSV:", outdir / "all_models_evaluation.csv")
+    print("→ Plots:", outdir / "faithfulness_model_comparison.*")
+    print("→ PDF :", pdf_path)
+
+
+if __name__ == "__main__":
+    main()
+
 

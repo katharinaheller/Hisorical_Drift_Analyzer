@@ -1,0 +1,12 @@
+{
+  "query_id": "Define_provide_a_rigorous_definition_of_ai_using_only_the_provided_context___des",
+  "ndcg@k": 1.0,
+  "faithfulness": 1.0,
+  "dominant_decade": 2020,
+  "decade_counts": {
+    "2020s": 7,
+    "2000s": 3
+  },
+  "citation_hit_rate": 1.0,
+  "model_name": "mistral_7b"
+}

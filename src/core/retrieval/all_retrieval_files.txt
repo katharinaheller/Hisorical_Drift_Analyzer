@@ -230,14 +230,16 @@ class FAISSRetriever(IRetriever):
 from __future__ import annotations
 import logging
 from typing import Any, Dict, Type
+
 from src.core.retrieval.temporal_reranker import TemporalReranker
 from src.core.retrieval.semantic_reranker import SemanticReranker
 from src.core.retrieval.interfaces.i_reranker import IReranker
 
 logger = logging.getLogger(__name__)
 
+
 class RerankerFactory:
-    """Factory for deterministic reranker construction."""
+    """Factory for deterministic and clean reranker construction."""
 
     _registry: Dict[str, Type[IReranker]] = {
         "temporal": TemporalReranker,
@@ -246,7 +248,7 @@ class RerankerFactory:
 
     @staticmethod
     def from_config(cfg: Dict[str, Any]) -> IReranker:
-        """Instantiate reranker from configuration dictionary."""
+        """Instantiate reranker from configuration dictionary with clean parameter mapping."""
         opts = cfg.get("options", {})
         rtype = str(opts.get("reranker", "semantic")).lower()
 
@@ -259,27 +261,27 @@ class RerankerFactory:
         cls = RerankerFactory._registry[rtype]
         logger.info(f"Initializing reranker of type='{rtype}'")
 
+        # -------------------------------------------------------------
+        # Temporal Reranker (Golden Middle Version)
+        # -------------------------------------------------------------
         if cls is TemporalReranker:
             return TemporalReranker(
-                lambda_weight=float(opts.get("lambda_weight", 0.55)),
+                semantic_threshold=float(opts.get("semantic_threshold", 0.40)),
                 min_year=int(opts.get("min_year", 1900)),
-                enforce_decade_balance=bool(opts.get("enforce_decade_balance", True)),
-                age_score_boost=float(opts.get("age_score_boost", 0.25)),
-                min_decade_threshold=int(opts.get("min_decade_threshold", 3)),
-                nonlinear_boost=str(opts.get("nonlinear_boost", "sigmoid")),
-                ignore_years=list(opts.get("ignore_years", [])),
-                recency_cutoff_year=opts.get("recency_cutoff_year"),
-                allow_legacy_backfill=bool(opts.get("allow_legacy_backfill", True)),
-                legacy_backfill_max_ratio=float(opts.get("legacy_backfill_max_ratio", 0.3)),
                 must_include=list(opts.get("must_include", [])),
                 blacklist_sources=list(opts.get("blacklist_sources", [])),
-                zscore_normalization=bool(opts.get("zscore_normalization", False)),
             )
 
+        # -------------------------------------------------------------
+        # Semantic Reranker
+        # -------------------------------------------------------------
         if cls is SemanticReranker:
             return SemanticReranker(
                 model_name=str(
-                    opts.get("semantic_model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+                    opts.get(
+                        "semantic_model",
+                        "cross-encoder/ms-marco-MiniLM-L-6-v2"
+                    )
                 ),
                 top_k=int(opts.get("top_k_rerank", 25)),
                 semantic_weight=float(opts.get("semantic_weight", 0.75)),
@@ -287,6 +289,7 @@ class RerankerFactory:
             )
 
 ==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\retrieval_orchestrator.py ==== 
+# src/core/retrieval/retrieval_orchestrator.py
 from __future__ import annotations
 import logging
 from typing import List, Dict, Any, Optional
@@ -301,16 +304,7 @@ from src.core.evaluation.utils import make_chunk_id  # # stable id builder for e
 
 
 class RetrievalOrchestrator:
-    """
-    Unified retrieval orchestrator — controlled externally by prompt intent.
-    Pipeline:
-      1. Receive (query, intent)
-      2. Retrieve chunks from FAISS
-      3. Apply reranker (semantic / temporal)
-      4. Enforce optional diversity
-      5. Calibrate graded relevance (0..3) via score distribution (proxy)
-      6. Assign stable id + rank and return exactly top_k results
-    """
+    """Unified retrieval orchestrator — orchestrates query → retrieval → reranking pipeline."""
 
     def __init__(self, config_path: str = "configs/retrieval.yaml"):
         self.logger = logging.getLogger("RetrievalOrchestrator")
@@ -320,15 +314,21 @@ class RetrievalOrchestrator:
         opts = self.cfg.get("options", {})
         paths = self.cfg.get("paths", {})
 
+        # Core parameters
         self.top_k = int(opts.get("top_k", 10))
         self.vector_store_dir = str(paths.get("vector_store_dir", "data/vector_store"))
-        self.embedding_model = opts.get("embedding_model", "all-MiniLM-L6-v2")
+        self.embedding_model = opts.get("embedding_model", "multi-qa-mpnet-base-dot-v1")
+        self.diversify_sources_default = bool(opts.get("diversify_sources", True))
+        oversample_factor = int(opts.get("oversample_factor", 10))
+        self.max_initial = max(self.top_k * oversample_factor, self.top_k * 8)
 
-        # # Feature flags
-        self.diversify_sources = bool(opts.get("diversify_sources", True))
-        self.max_initial = max(self.top_k * 8, int(opts.get("oversample_factor", 8)) * self.top_k)
+        # Validate embedding model
+        try:
+            self.embed_model = SentenceTransformer(self.embedding_model)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load embedding model '{self.embedding_model}': {e}")
 
-        # # Initialize FAISS retriever
+        # Initialize FAISS retriever
         self.retriever = FAISSRetriever(
             vector_store_dir=self.vector_store_dir,
             model_name=self.embedding_model,
@@ -337,32 +337,43 @@ class RetrievalOrchestrator:
             use_gpu=False,
             similarity_metric="cosine",
             temporal_awareness=False,
-            diversify_sources=self.diversify_sources,
+            diversify_sources=self.diversify_sources_default,
         )
 
-        # # Embedding model for diversity computations
-        self.embed_model = SentenceTransformer(self.embedding_model)
-
-        # # Cache for reranker to avoid re-instantiation overhead
+        # Cached reranker instance
         self._cached_reranker_type: Optional[str] = None
         self._cached_reranker = None
 
         self.logger.info(
-            f"RetrievalOrchestrator initialized | top_k={self.top_k} | diversify_sources={self.diversify_sources}"
+            f"RetrievalOrchestrator initialized | top_k={self.top_k} | "
+            f"default_diversify={self.diversify_sources_default} | model={self.embedding_model}"
         )
 
     # ------------------------------------------------------------------
     def retrieve(self, query: str, intent: str) -> List[Dict[str, Any]]:
-        # # retrieve relevant chunks according to user intent
+        """Retrieve, rerank, and return top-k chunks based on query and detected intent."""
         if not query or not query.strip():
             self.logger.warning("Empty query ignored.")
             return []
 
+        # Intent-dependent configuration
         is_historical = intent == "chronological"
-        self.logger.info(f"Retrieval started | intent={intent} | top_k={self.top_k}")
 
+        # Dynamically control retrieval behaviour
+        self.retriever.temporal_awareness = is_historical
+        self.retriever.diversify_sources = is_historical  # only enable for chronological mode
+
+        self.logger.info(
+            f"Retrieval started | intent={intent} | top_k={self.top_k} | "
+            f"temporal_awareness={self.retriever.temporal_awareness} | "
+            f"diversify_sources={self.retriever.diversify_sources}"
+        )
+
+        # --- initial retrieval ---
         try:
-            raw_results = self.retriever.search(query, top_k=self.max_initial, temporal_mode=is_historical)
+            raw_results = self.retriever.search(
+                query, top_k=self.max_initial, temporal_mode=is_historical
+            )
         except Exception as e:
             self.logger.exception(f"FAISS retrieval failed: {e}")
             return []
@@ -371,54 +382,64 @@ class RetrievalOrchestrator:
             self.logger.warning("No retrieval results found.")
             return []
 
-        # # Step 2: reranking with cached instance
+        # --- inject query text for reranker ---
+        for r in raw_results:
+            r["query"] = query.strip()
+
+        # --- dynamic reranker selection ---
         reranker_type = "temporal" if is_historical else "semantic"
         if reranker_type != self._cached_reranker_type or self._cached_reranker is None:
-            self._cached_reranker = RerankerFactory.from_config({"options": {"reranker": reranker_type}})
+            self._cached_reranker = RerankerFactory.from_config(
+                {"options": {"reranker": reranker_type}}
+            )
             self._cached_reranker_type = reranker_type
 
+        # --- reranking phase ---
         try:
             reranked = self._cached_reranker.rerank(raw_results, top_k=len(raw_results))
         except Exception as e:
             self.logger.exception(f"Reranking failed ({reranker_type}): {e}")
             reranked = raw_results
 
-        # # normalize score field and sort deterministically
+        # --- normalization + sorting ---
         for x in reranked:
             x["final_score"] = float(x.get("final_score", x.get("score", 0.0)) or 0.0)
         reranked.sort(key=lambda x: (x["final_score"], x.get("id", "")), reverse=True)
 
-        # # Step 3: optional historical diversity enforcement
+        # --- apply diversity + relevance scoring ---
         diversified = self._enforce_diversity(reranked, self.top_k, is_historical)
-
-        # # Step 4: graded relevance (0..3) via score quantiles as white-box proxy
-        diversified = self._attach_graded_relevance(diversified, ref_population=reranked)
-
-        # # Step 5: ensure exact k and assign stable ids + ranks
+        diversified = self._attach_graded_relevance(diversified, reranked)
         final = self._ensure_exact_k(diversified, self.top_k)
+
+        # --- finalize ranks + log stats ---
         for i, x in enumerate(final, start=1):
             if not x.get("id"):
-                x["id"] = make_chunk_id(x)  # # stable id for evaluation mapping
-            x["rank"] = i                  # # deterministic rank for citation mapping
+                x["id"] = make_chunk_id(x)
+            x["rank"] = i
 
         self._log_decade_distribution(final)
-        self.logger.info(f"Retrieval finished | returned={len(final)} | mode={intent}")
+        self.logger.info(
+            f"Retrieval finished | returned={len(final)} | mode={intent} | "
+            f"diversity={self.retriever.diversify_sources}"
+        )
         return final
 
     # ------------------------------------------------------------------
-    def _enforce_diversity(self, results: List[Dict[str, Any]], k: int, historical: bool) -> List[Dict[str, Any]]:
-        # # diversify by decade and source for chronological intent
+    def _enforce_diversity(
+        self, results: List[Dict[str, Any]], k: int, historical: bool
+    ) -> List[Dict[str, Any]]:
+        """Diversify retrieval results by source and decade (for chronological mode)."""
         if not results:
             return []
 
-        if not historical or not self.diversify_sources:
-            # # simple deduplication on text hash to avoid near-duplicates
+        if not historical or not self.retriever.diversify_sources:
+            # Simple deduplication without diversity
             seen, out = set(), []
             for r in results:
-                t = (r.get("text") or "").strip()
-                if not t:
+                text = (r.get("text") or "").strip()
+                if not text:
                     continue
-                h = hash(t)
+                h = hash(text)
                 if h in seen:
                     continue
                 seen.add(h)
@@ -427,15 +448,16 @@ class RetrievalOrchestrator:
                     break
             return out
 
-        # # historical: add semantic diversity + decade/source spread
+        # Historical mode: enforce semantic and temporal spread
         selected, used_sources, used_decades = [], set(), set()
         pool_texts = [self._clean_text(r.get("text", "")) for r in results]
         pool_idxs = [i for i, t in enumerate(pool_texts) if t]
         if not pool_idxs:
             return results[:k]
 
-        # # batch-encode to reduce latency for diversity check
-        embs = self.embed_model.encode([pool_texts[i] for i in pool_idxs], normalize_embeddings=True)
+        embs = self.embed_model.encode(
+            [pool_texts[i] for i in pool_idxs], normalize_embeddings=True
+        )
         kept_embs = []
 
         for j, idx in enumerate(pool_idxs):
@@ -462,25 +484,27 @@ class RetrievalOrchestrator:
             if decade:
                 used_decades.add(decade)
 
-        # # if not enough, fill up with remaining best scores
         if len(selected) < k:
             used_ids = {id(x) for x in selected}
             for r in results:
-                if id(r) in used_ids:
-                    continue
-                selected.append(r)
-                if len(selected) >= k:
-                    break
-
+                if id(r) not in used_ids:
+                    selected.append(r)
+                    if len(selected) >= k:
+                        break
         return selected
 
     # ------------------------------------------------------------------
-    def _attach_graded_relevance(self, items: List[Dict[str, Any]], ref_population: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # # attach graded relevance labels (0..3) derived from score quantiles
+    def _attach_graded_relevance(
+        self, items: List[Dict[str, Any]], ref_population: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Assign relevance labels (0–3) based on score quantiles."""
         if not items:
             return items
 
-        scores = np.array([float(x.get("final_score", x.get("score", 0.0)) or 0.0) for x in ref_population], dtype=float)
+        scores = np.array(
+            [float(x.get("final_score", x.get("score", 0.0)) or 0.0) for x in ref_population],
+            dtype=float,
+        )
         if scores.size == 0 or np.allclose(scores.std(), 0.0):
             for x in items:
                 x["relevance"] = 1
@@ -495,34 +519,24 @@ class RetrievalOrchestrator:
 
         for x in items:
             s = float(x.get("final_score", x.get("score", 0.0)) or 0.0)
-            if s <= q1:
-                rel = 0
-            elif s <= q2:
-                rel = 1
-            elif s <= q3:
-                rel = 2
-            else:
-                rel = 3
-            x["relevance"] = int(rel)
-
+            x["relevance"] = int(0 if s <= q1 else 1 if s <= q2 else 2 if s <= q3 else 3)
         return items
 
     # ------------------------------------------------------------------
     def _ensure_exact_k(self, results: List[Dict[str, Any]], k: int) -> List[Dict[str, Any]]:
-        # # ensure deterministic top-k output length
+        """Guarantee exactly k output results (pad if necessary)."""
         if not results:
             return []
         if len(results) > k:
             return results[:k]
-        if 0 < len(results) < k:
+        if len(results) < k:
             pad = results[-1].copy()
-            padding = [pad.copy() for _ in range(k - len(results))]
-            return results + padding
+            results.extend(pad.copy() for _ in range(k - len(results)))
         return results
 
     # ------------------------------------------------------------------
     def _safe_year(self, r: Dict[str, Any]) -> Optional[int]:
-        # # safely extract valid publication year
+        """Safely extract year from metadata."""
         meta = r.get("metadata", {}) or {}
         y = meta.get("year", r.get("year"))
         try:
@@ -535,15 +549,14 @@ class RetrievalOrchestrator:
 
     # ------------------------------------------------------------------
     def _clean_text(self, t: str) -> str:
-        # # conservative cleanup to stabilize hashing/embeddings
+        """Normalize whitespace for embedding stability."""
         if not t:
             return ""
-        s = t.replace("\n", " ").replace("\r", " ")
-        return " ".join(s.split())
+        return " ".join(t.replace("\n", " ").replace("\r", " ").split())
 
     # ------------------------------------------------------------------
     def _log_decade_distribution(self, items: List[Dict[str, Any]]) -> None:
-        # # log decade distribution for diagnostics
+        """Log temporal distribution of retrieved documents."""
         hist: Dict[str, int] = defaultdict(int)
         for r in items:
             y = self._safe_year(r)
@@ -554,7 +567,7 @@ class RetrievalOrchestrator:
 
     # ------------------------------------------------------------------
     def close(self) -> None:
-        # # close retriever resources gracefully
+        """Gracefully close retriever resources."""
         try:
             self.retriever.close()
         except Exception as e:
@@ -654,201 +667,121 @@ class SemanticReranker(IReranker):
         return docs[:k]
 
 ==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\temporal_reranker.py ==== 
-# src/core/retrieval/temporal_reranker.py
 from __future__ import annotations
-import logging, math
-from statistics import mean, pstdev, median
-from datetime import datetime
+import logging
+from typing import List, Dict, Any, Tuple, Dict, Optional
 from collections import defaultdict
-from typing import List, Dict, Any, Set
 from src.core.retrieval.interfaces.i_reranker import IReranker
 
 logger = logging.getLogger(__name__)
 
 class TemporalReranker(IReranker):
-    """Combines semantic scores with temporal diversity balancing."""
+    """
+    Semantic-first temporal diversification.
+    Ensures that each decade contributes at most one document,
+    but only if semantic relevance is sufficiently high.
+    No score manipulation. No age penalties or boosts.
+    """
 
     def __init__(
         self,
-        lambda_weight: float = 0.55,
+        semantic_threshold: float = 0.40,  # minimal score required for decade coverage
         min_year: int = 1900,
-        enforce_decade_balance: bool = True,
-        age_score_boost: float = 0.25,
-        min_decade_threshold: int = 3,
-        nonlinear_boost: str = "sigmoid",
-        ignore_years: List[int] | None = None,
-        recency_cutoff_year: int | None = None,
-        allow_legacy_backfill: bool = True,
-        legacy_backfill_max_ratio: float = 0.3,
         must_include: List[str] | None = None,
-        blacklist_sources: List[str] | None = None,
-        zscore_normalization: bool = False,
+        blacklist_sources: List[str] | None = None
     ):
-        self.lambda_weight = lambda_weight
-        self.age_score_boost = age_score_boost
-        self.enforce_decade_balance = enforce_decade_balance
-        self.min_decade_threshold = min_decade_threshold
-        self.nonlinear_boost = nonlinear_boost.lower()
+        self.semantic_threshold = semantic_threshold
         self.min_year = min_year
-        self.ignore_years: Set[int] = set(ignore_years or [])
-        self.recency_cutoff_year = recency_cutoff_year
-        self.allow_legacy_backfill = allow_legacy_backfill
-        self.legacy_backfill_max_ratio = legacy_backfill_max_ratio
         self.must_include = must_include or []
         self.blacklist_sources = blacklist_sources or []
-        self.zscore_normalization = zscore_normalization
 
     # ------------------------------------------------------------------
     def rerank(self, results: List[Dict[str, Any]], top_k: int = 10) -> List[Dict[str, Any]]:
         if not results:
             return []
 
-        # Jahr extrahieren + Filter anwenden
+        # Extract valid years
         for r in results:
             r["year"] = self._extract_year(r)
-        results = [r for r in results if r["year"] not in self.ignore_years]
+
+        # Apply blacklists
         results = [r for r in results if not self._is_blacklisted(r)]
         if not results:
             return []
 
-        # Z-Score-Normalisierung optional
-        if self.zscore_normalization:
-            self._normalize_scores(results)
+        # ---- 1. Pure semantic sort ----
+        results_sorted = sorted(results, key=lambda r: r.get("score", 0.0), reverse=True)
 
-        # Zeitliche Gewichtung
-        now = datetime.utcnow().year
-        for r in results:
-            y = r["year"]
-            r["adjusted_score"] = self._apply_age_boost(r.get("score", 0.0), y, now)
+        # ---- 2. Group by decade ----
+        decade_groups = self._group_by_decade(results_sorted)
 
-        results.sort(key=lambda x: x["adjusted_score"], reverse=True)
-        decade_groups = self._group_by_decade(results)
-        decades = sorted(decade_groups.keys())
+        # ---- 3. Pick top semantic document per decade (if strong) ----
+        selected = []
+        seen = set()
 
-        if not decades:
-            return results[:top_k]
+        for dec in sorted(decade_groups.keys()):
+            best = decade_groups[dec][0]
+            if best["score"] >= self.semantic_threshold:
+                key = self._src_key(best)
+                if key not in seen:
+                    selected.append(best)
+                    seen.add(key)
 
-        λ = self._adaptive_lambda(len(decades))
-        selected = (
-            self._balanced_decade_selection(decade_groups, decades, top_k)
-            if self.enforce_decade_balance
-            else results[:top_k]
-        )
+        # ---- 4. Fill remaining purely by semantic score ----
+        for r in results_sorted:
+            key = self._src_key(r)
+            if key not in seen:
+                selected.append(r)
+                seen.add(key)
+            if len(selected) >= top_k:
+                break
 
-        median_dec = int(median(decades))
-        for r in selected:
-            base = r.get("adjusted_score", 0.0)
-            dec_diff = abs((r["year"] // 10) * 10 - median_dec)
-            temporal_div = 1 / (1 + dec_diff / 10)
-            r["final_score"] = λ * base + (1 - λ) * temporal_div
+        # ---- 5. Inject must-include sources at front ----
+        selected = self._inject_must_include(selected, results, top_k)
 
-        ranked = sorted(selected, key=lambda x: x["final_score"], reverse=True)
-        ranked = self._apply_recency_cutoff(ranked, results, top_k)
-        ranked = self._inject_must_include(ranked, results, top_k)
-
-        logger.info(
-            f"Temporal reranking complete | decades={len(decades)} | λ={λ:.2f} | age_boost={self.age_score_boost:.2f}"
-        )
-        return ranked[:top_k]
+        logger.info(f"Temporal diversification complete | decades={len(decade_groups)} | threshold={self.semantic_threshold}")
+        return selected[:top_k]
 
     # ------------------------------------------------------------------
-    def _extract_year(self, r: Dict[str, Any]) -> int:
+    def _extract_year(self, r):
         meta = r.get("metadata", {})
         y = meta.get("year") or r.get("year")
         try:
-            val = int(str(y))
-            if val < self.min_year or val > 2100:
-                raise ValueError
-            return val
+            y = int(str(y))
+            if y < self.min_year or y > 2100:
+                return self.min_year
+            return y
         except Exception:
             return self.min_year
 
-    def _group_by_decade(self, results: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
-        out: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    def _group_by_decade(self, results):
+        groups = defaultdict(list)
         for r in results:
-            d = (r["year"] // 10) * 10
-            out[d].append(r)
-        for d in out:
-            out[d].sort(key=lambda x: x.get("adjusted_score", 0.0), reverse=True)
-        return out
+            decade = (r["year"] // 10) * 10
+            groups[decade].append(r)
+        return groups
 
-    def _apply_age_boost(self, base: float, year: int, now: int) -> float:
-        age = max(0, now - year)
-        if self.nonlinear_boost == "sigmoid":
-            s = 1 / (1 + math.exp((age - 6) / 4.0))
-        elif self.nonlinear_boost == "sqrt":
-            s = math.sqrt(max(0, 1 - min(age / 40, 1)))
-        else:
-            s = max(0, 1 - min(age / 30, 1))
-        return base + self.age_score_boost * s
+    def _src_key(self, r):
+        meta = r.get("metadata", {})
+        return (meta.get("source_file") or meta.get("title") or "unknown").lower()
 
-    def _adaptive_lambda(self, n_decades: int) -> float:
-        if n_decades < self.min_decade_threshold:
-            return max(0.3, self.lambda_weight * (n_decades / self.min_decade_threshold))
-        return min(1.0, self.lambda_weight + 0.05 * math.log1p(n_decades))
+    def _is_blacklisted(self, r):
+        key = self._src_key(r)
+        return any(b.lower() in key for b in self.blacklist_sources)
 
-    def _balanced_decade_selection(self, groups: Dict[int, List[Dict[str, Any]]], decades: List[int], top_k: int):
-        selected: List[Dict[str, Any]] = []
-        for d in decades:
-            if groups[d]:
-                selected.append(groups[d].pop(0))
-                if len(selected) >= top_k:
-                    return selected
-        i = 0
-        while len(selected) < top_k and any(groups.values()):
-            d = decades[i % len(decades)]
-            if groups[d]:
-                selected.append(groups[d].pop(0))
-            i += 1
-        return selected
-
-    def _normalize_scores(self, results: List[Dict[str, Any]]):
-        vals = [r.get("score", 0.0) for r in results]
-        if len(vals) < 2:
-            return
-        μ, σ = mean(vals), pstdev(vals)
-        if σ < 1e-8:
-            return
-        for r in results:
-            r["score"] = (r["score"] - μ) / σ
-
-    def _apply_recency_cutoff(self, ranked: List[Dict[str, Any]], all_results: List[Dict[str, Any]], top_k: int):
-        if not self.recency_cutoff_year:
-            return ranked[:top_k]
-        recent = [r for r in ranked if r["year"] >= self.recency_cutoff_year]
-        legacy = [r for r in ranked if r["year"] < self.recency_cutoff_year]
-        if len(recent) >= top_k:
-            return recent[:top_k]
-        if not self.allow_legacy_backfill:
-            return recent
-        max_legacy = int(top_k * self.legacy_backfill_max_ratio)
-        return (recent + legacy[:max_legacy])[:top_k]
-
-    def _inject_must_include(self, ranked: List[Dict[str, Any]], all_results: List[Dict[str, Any]], top_k: int):
-        must = [r for r in all_results if self._matches_must_include(r)]
+    def _inject_must_include(self, ranked, all_results, top_k):
+        must = [r for r in all_results if any(m in self._src_key(r) for m in self.must_include)]
         if not must:
             return ranked
         merged, seen = [], set()
         for r in must + ranked:
             key = self._src_key(r)
             if key not in seen:
-                seen.add(key)
                 merged.append(r)
+                seen.add(key)
             if len(merged) >= top_k:
                 break
         return merged
-
-    def _src_key(self, r: Dict[str, Any]) -> str:
-        meta = r.get("metadata", {})
-        return (meta.get("source_file") or meta.get("title") or "unknown").lower()
-
-    def _matches_must_include(self, r: Dict[str, Any]) -> bool:
-        key = self._src_key(r)
-        return any(m.lower() in key for m in self.must_include)
-
-    def _is_blacklisted(self, r: Dict[str, Any]) -> bool:
-        key = self._src_key(r)
-        return any(b.lower() in key for b in self.blacklist_sources)
 
 ==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\__init__.py ==== 
 
@@ -884,4 +817,226 @@ class IRetriever(ABC):
         pass
 .
 ==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\interfaces\__init__.py ==== 
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\orchestrator\diversity_pipeline.py ==== 
+from __future__ import annotations
+from typing import List, Dict, Any
+from sentence_transformers import SentenceTransformer, util
+
+class DiversityPipeline:
+    """Applies semantic and temporal diversity rules."""
+
+    def __init__(self, embed_model: SentenceTransformer):
+        self.embed_model = embed_model
+
+    def _clean(self, t: str) -> str:
+        return " ".join(t.replace("\n", " ").replace("\r", " ").split())
+
+    def apply(self, ranked: List[Dict[str, Any]], k: int, historical: bool) -> List[Dict[str, Any]]:
+        # Non-historical: simple dedupe
+        if not historical:
+            seen, out = set(), []
+            for r in ranked:
+                tx = (r.get("text") or "").strip()
+                h = hash(tx)
+                if h not in seen:
+                    seen.add(h)
+                    out.append(r)
+                if len(out) >= k:
+                    break
+            return out
+
+        # Historical: semantic & temporal diversity
+        texts = [self._clean(r.get("text", "")) for r in ranked]
+        idxs = [i for i, t in enumerate(texts) if t]
+        embs = self.embed_model.encode([texts[i] for i in idxs], normalize_embeddings=True)
+
+        selected, kept_embs = [], []
+        for j, idx in enumerate(idxs):
+            if len(selected) >= k:
+                break
+            cand = ranked[idx]
+            emb = embs[j]
+            if kept_embs:
+                sims = util.cos_sim(emb, kept_embs)[0]
+                if float(sims.max()) > 0.95:
+                    continue
+            selected.append(cand)
+            kept_embs.append(emb)
+        return selected
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\orchestrator\final_selector.py ==== 
+from __future__ import annotations
+from typing import List, Dict
+
+class FinalSelector:
+    """Ensure exact final_k chunk selection."""
+
+    def select(self, items: List[Dict], k: int) -> List[Dict]:
+        if len(items) >= k:
+            return items[:k]
+        if not items:
+            return []
+        pad = items[-1].copy()
+        return items + [pad.copy() for _ in range(k - len(items))]
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\orchestrator\relevance_annotator.py ==== 
+from __future__ import annotations
+from typing import List, Dict
+import numpy as np
+
+class RelevanceAnnotator:
+    """Assigns 0-3 relevance labels based on score distribution."""
+
+    def apply(self, items: List[Dict], population: List[Dict]) -> List[Dict]:
+        scores = np.array([float(x.get("final_score", 0.0)) for x in population])
+        if scores.size == 0 or np.allclose(scores.std(), 0.0):
+            for x in items:
+                x["relevance"] = 1
+            return items
+        q1, q2, q3 = np.quantile(scores, [0.25, 0.5, 0.75])
+        for x in items:
+            s = float(x.get("final_score", 0.0))
+            x["relevance"] = int(0 if s <= q1 else 1 if s <= q2 else 2 if s <= q3 else 3)
+        return items
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\orchestrator\reranking_pipeline.py ==== 
+from __future__ import annotations
+from typing import List, Dict, Any
+from src.core.retrieval.reranker_factory import RerankerFactory
+
+class RerankingPipeline:
+    """Unified reranking abstraction."""
+
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self.cached_type = None
+        self.cached_reranker = None
+
+    def _get(self, intent: str):
+        rtype = "temporal" if intent == "chronological" else "semantic"
+        if rtype != self.cached_type:
+            self.cached_reranker = RerankerFactory.from_config({"options": {"reranker": rtype}})
+            self.cached_type = rtype
+        return self.cached_reranker
+
+    def run(self, docs: List[Dict[str, Any]], intent: str) -> List[Dict[str, Any]]:
+        reranker = self._get(intent)
+        ranked = reranker.rerank(docs, top_k=len(docs))
+        for d in ranked:
+            d["final_score"] = float(d.get("final_score", d.get("score", 0.0)))
+        ranked.sort(key=lambda x: x["final_score"], reverse=True)
+        return ranked
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\orchestrator\retrieval_orchestrator.py ==== 
+from __future__ import annotations
+import logging
+from typing import Dict, Any, List
+from src.core.config.config_loader import ConfigLoader
+from sentence_transformers import SentenceTransformer
+from src.core.retrieval.faiss_retriever import FAISSRetriever
+
+from src.core.retrieval.orchestrator.retrieval_pipeline import RetrievalPipeline
+from src.core.retrieval.orchestrator.reranking_pipeline import RerankingPipeline
+from src.core.retrieval.orchestrator.diversity_pipeline import DiversityPipeline
+from src.core.retrieval.orchestrator.relevance_annotator import RelevanceAnnotator
+from src.core.retrieval.orchestrator.final_selector import FinalSelector
+
+from src.core.evaluation.utils import make_chunk_id
+
+
+class RetrievalOrchestrator:
+    """Clean multi-stage retrieval orchestrator for RAG."""
+
+    def __init__(self, config_path: str = "configs/retrieval.yaml"):
+        self.logger = logging.getLogger("RetrievalOrchestrator")
+        cfg_loader = ConfigLoader(config_path)
+        self.cfg = cfg_loader.config
+
+        opts = self.cfg["options"]
+        paths = self.cfg["paths"]
+
+        # Multi-stage parameters
+        self.final_k = int(opts.get("final_k", 10))
+        oversample = int(opts.get("oversample_factor", 15))
+        self.initial_k = max(self.final_k * oversample, self.final_k * 8)
+
+        # Embedding model
+        self.embed_model = SentenceTransformer(opts["embedding_model"])
+
+        # Retriever instance
+        self.retriever = FAISSRetriever(
+            vector_store_dir=paths["vector_store_dir"],
+            model_name=opts["embedding_model"],
+            top_k_retrieve=self.initial_k,
+            normalize_embeddings=True,
+            use_gpu=opts.get("use_gpu", False),
+            similarity_metric=opts.get("similarity_metric", "cosine"),
+            temporal_awareness=False,
+            diversify_sources=opts.get("diversify_sources", True),
+        )
+
+        # Pipeline modules
+        self.stage_retrieve = RetrievalPipeline(self.retriever, self.initial_k)
+        self.stage_rerank = RerankingPipeline(self.cfg)
+        self.stage_diversity = DiversityPipeline(self.embed_model)
+        self.stage_label = RelevanceAnnotator()
+        self.stage_select = FinalSelector()
+
+    # ------------------------------------------------------------------
+    def retrieve(self, query: str, intent: str) -> List[Dict[str, Any]]:
+        if not query.strip():
+            return []
+
+        historical = intent == "chronological"
+
+        # Stage 1: Broad retrieval
+        raw = self.stage_retrieve.run(query, historical)
+
+        # Stage 2: Full reranking
+        ranked = self.stage_rerank.run(raw, intent)
+
+        # Stage 3: Diversity
+        diversified = self.stage_diversity.apply(ranked, self.final_k, historical)
+
+        # Stage 4: Relevance annotation
+        annotated = self.stage_label.apply(diversified, ranked)
+
+        # Stage 5: Final-k selection
+        final = self.stage_select.select(annotated, self.final_k)
+
+        # Assign stable IDs and ranks
+        for i, x in enumerate(final, start=1):
+            x["rank"] = i
+            if not x.get("id"):
+                x["id"] = make_chunk_id(x)
+
+        return final
+
+    # ------------------------------------------------------------------
+    def close(self):
+        self.retriever.close()
+.
+==== C:\Users\katha\historical-drift-analyzer\src\core\retrieval\orchestrator\retrieval_pipeline.py ==== 
+from __future__ import annotations
+from typing import List, Dict, Any
+from src.core.retrieval.faiss_retriever import FAISSRetriever
+
+class RetrievalPipeline:
+    """Handles broad FAISS retrieval only."""
+
+    def __init__(self, retriever: FAISSRetriever, initial_k: int):
+        self.retriever = retriever
+        self.initial_k = initial_k
+
+    def run(self, query: str, historical: bool) -> List[Dict[str, Any]]:
+        # Perform broad retrieval without post-processing
+        raw = self.retriever.search(
+            query,
+            top_k=self.initial_k,
+            temporal_mode=historical,
+        )
+        for r in raw:
+            r["query"] = query
+        return raw
 .

@@ -1,8 +1,8 @@
 options:
   vector_store: "FAISS"
   embedding_backend: "sentence-transformers"
-  embedding_model: "multi-qa-mpnet-base-dot-v1"   # vorher: all-MiniLM-L6-v2
-  dimension: 768                                  # mpnet hat 768 Dimensionen
+  embedding_model: "multi-qa-mpnet-base-dot-v1"
+  dimension: 768
   normalize_embeddings: true
   batch_size: 16
   log_level: "INFO"

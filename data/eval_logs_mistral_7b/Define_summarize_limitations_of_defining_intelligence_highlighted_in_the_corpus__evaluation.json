@@ -1,0 +1,13 @@
+{
+  "query_id": "Define_summarize_limitations_of_defining_intelligence_highlighted_in_the_corpus_",
+  "ndcg@k": 1.0,
+  "faithfulness": 1.0,
+  "dominant_decade": 2000,
+  "decade_counts": {
+    "2000s": 6,
+    "2010s": 1,
+    "2020s": 3
+  },
+  "citation_hit_rate": 1.0,
+  "model_name": "mistral_7b"
+}
