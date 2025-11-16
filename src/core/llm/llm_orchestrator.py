@@ -9,7 +9,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer, util
 
 from src.core.config.config_loader import ConfigLoader
-from src.core.retrieval.retrieval_orchestrator import RetrievalOrchestrator
+from src.core.retrieval.orchestrator.retrieval_orchestrator import RetrievalOrchestrator
 from src.core.llm.ollama_llm import OllamaLLM
 from src.core.prompt.prompt_orchestrator import PromptOrchestrator
 from src.core.prompt.query.prompt_builder import PromptBuilder
