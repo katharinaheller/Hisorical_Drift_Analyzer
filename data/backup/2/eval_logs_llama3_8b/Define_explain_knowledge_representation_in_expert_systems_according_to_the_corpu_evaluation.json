@@ -1,0 +1,11 @@
+{
+  "query_id": "Define_explain_knowledge_representation_in_expert_systems_according_to_the_corpu",
+  "ndcg@k": 1.0,
+  "faithfulness": 0.8195695248453594,
+  "dominant_decade": 2010,
+  "decade_counts": {
+    "2010s": 10
+  },
+  "citation_hit_rate": 1.0,
+  "model_name": "llama3_8b"
+}

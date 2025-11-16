@@ -1,0 +1,12 @@
+{
+  "query_id": "Analyze_the_mechanisms__strengths__and_limitations_of_list_examples_of_early_med",
+  "ndcg@k": 0.9991031692211777,
+  "faithfulness": 0.604227392727875,
+  "dominant_decade": 2010,
+  "decade_counts": {
+    "2010s": 9,
+    "2020s": 1
+  },
+  "citation_hit_rate": 1.0,
+  "model_name": "phi3_4b"
+}

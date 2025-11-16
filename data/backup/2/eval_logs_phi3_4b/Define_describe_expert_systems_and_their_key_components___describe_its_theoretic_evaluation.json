@@ -1,0 +1,12 @@
+{
+  "query_id": "Define_describe_expert_systems_and_their_key_components___describe_its_theoretic",
+  "ndcg@k": 1.0,
+  "faithfulness": 0.7309608257099476,
+  "dominant_decade": 2010,
+  "decade_counts": {
+    "2010s": 9,
+    "1990s": 1
+  },
+  "citation_hit_rate": 1.0,
+  "model_name": "phi3_4b"
+}

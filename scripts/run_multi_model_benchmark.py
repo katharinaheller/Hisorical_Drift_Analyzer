@@ -1,32 +1,33 @@
 # scripts/run_multi_model_benchmark.py
 from __future__ import annotations
+
+# Add project root
 import sys
 import os
 import subprocess
 import time
-from pathlib import Path
 import argparse
-import pandas as pd
 import json
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
-# ensure project root on path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# PDF builder
 from src.core.evaluation.multi_model_report_builder import MultiModelReportBuilder
 
-# six-level strict color coding
+# Color scale for six-level classification
 FAITH_COLORS = {
-    "excellent":  "#006d2c",  # dark green
-    "good":       "#31a354",  # green
-    "fair":       "#a1d99b",  # light green
-    "borderline": "#fed976",  # yellow
-    "poor":       "#fd8d3c",  # orange
-    "critical":   "#e31a1c",  # deep red
+    "excellent":  "#006d2c",
+    "good":       "#31a354",
+    "fair":       "#a1d99b",
+    "borderline": "#fed976",
+    "poor":       "#fd8d3c",
+    "critical":   "#e31a1c",
 }
 
 FAITH_LABELS = {
@@ -38,43 +39,49 @@ FAITH_LABELS = {
     "critical":   "Critical (<0.40)",
 }
 
-# ----------------------------------------------------------------------
+
+# ---------------------------------------------------------
 
 def run(cmd: list[str]) -> None:
-    # Execute subprocess
+    # Wrapper for subprocess execution
     print(">>>", " ".join(cmd))
     start = time.time()
     p = subprocess.Popen(cmd)
     p.wait()
     print(f"finished in {time.time() - start:.1f}s\n")
 
-# ----------------------------------------------------------------------
+
+# ---------------------------------------------------------
 
 def load_eval_df(eval_dir: Path) -> pd.DataFrame:
-    # Load *_evaluation.json files into a dataframe
+    # Load all evaluation json files in the directory
     rows = []
     for fp in eval_dir.glob("*_evaluation.json"):
         try:
             d = json.loads(fp.read_text(encoding="utf-8"))
-            nd = d.get("ndcg@k")
-            fa = d.get("faithfulness")
-            rows.append({
-                "query_id": d.get("query_id"),
-                "ndcg": float(nd) if nd is not None else np.nan,
-                "faith": float(fa) if fa is not None else np.nan,
-                "model": d.get("model_name", "unknown"),
-            })
         except Exception:
             continue
+
+        nd = d.get("ndcg@k")
+        fa = d.get("faithfulness")
+
+        rows.append({
+            "query_id": d.get("query_id"),
+            "ndcg": float(nd) if nd is not None else np.nan,
+            "faith": float(fa) if fa is not None else np.nan,
+            "model": d.get("model_name", "unknown"),
+        })
+
     df = pd.DataFrame(rows)
-    if "faith" not in df.columns:
+    if "faith" not in df:
         df["faith"] = np.nan
     return df
 
-# ----------------------------------------------------------------------
+
+# ---------------------------------------------------------
 
 def faith_band(f: float) -> str:
-    # Strict six-level classification
+    # Six-level categorization
     if np.isnan(f):
         return "missing"
     v = float(f)
@@ -90,10 +97,26 @@ def faith_band(f: float) -> str:
         return "poor"
     return "critical"
 
-# ----------------------------------------------------------------------
+
+# ---------------------------------------------------------
+
+def clear_and_prepare(path: Path) -> None:
+    # Clear directory and reconstruct it
+    if path.exists():
+        for f in path.glob("*"):
+            if f.is_file():
+                f.unlink()
+            else:
+                import shutil
+                shutil.rmtree(f)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------
 
 def plot_global_comparison(df: pd.DataFrame, out_path: Path) -> None:
-    # Group counts by model and six-band faithfulness scale
+    # Draw multi-model band distribution
+    df = df.copy()
     df["band"] = df["faith"].apply(faith_band)
 
     models = sorted(df["model"].unique())
@@ -107,7 +130,7 @@ def plot_global_comparison(df: pd.DataFrame, out_path: Path) -> None:
     )
 
     x = np.arange(len(models))
-    width = 0.12  # narrower due to 6 categories
+    width = 0.12
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -134,46 +157,20 @@ def plot_global_comparison(df: pd.DataFrame, out_path: Path) -> None:
     fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
     plt.close(fig)
 
-# ----------------------------------------------------------------------
+
+# ---------------------------------------------------------
 
 def main() -> None:
-
     parser = argparse.ArgumentParser(
-        description="Run multi-model benchmark and build comparison report."
+        description="Run multi-model benchmark with strict isolation and build comparison report."
     )
-    parser.add_argument(
-        "--num_prompts",
-        type=int,
-        default=10,
-        help="Number of prompts to use from the prompt file."
-    )
-    parser.add_argument(
-        "--prompt_file",
-        type=str,
-        default="data/prompts/benchmark_prompts.txt",
-        help="Prompt file containing one query per line."
-    )
-    parser.add_argument(
-        "--k",
-        type=int,
-        default=10,
-        help="NDCG@k cutoff passed into the benchmark script."
-    )
-    parser.add_argument(
-        "--bootstrap_iters",
-        type=int,
-        default=2000,
-        help="Bootstrap iterations for confidence intervals."
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for deterministic runs."
-    )
+    parser.add_argument("--num_prompts", type=int, default=10)
+    parser.add_argument("--prompt_file", type=str, default="data/prompts/benchmark_prompts.txt")
+    parser.add_argument("--k", type=int, default=10)
+    parser.add_argument("--bootstrap_iters", type=int, default=2000)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    # Map profile → Ollama model identifier
     models = {
         "phi3_4b": "phi3-4b",
         "mistral_7b": "mistral-7b-instruct",
@@ -182,38 +179,32 @@ def main() -> None:
 
     all_dfs = []
 
-    for profile, model in models.items():
-        print(f"=== RUNNING MODEL: {profile} ({model}) ===")
+    for profile, model_id in models.items():
+        print(f"=== RUNNING MODEL: {profile} ({model_id}) ===")
 
-        logs = f"data/logs_{profile}"
-        evals = f"data/eval_logs_{profile}"
-        charts = f"data/eval_charts_{profile}"
+        logs_dir = Path(f"data/logs_{profile}")
+        eval_dir = Path(f"data/eval_logs_{profile}")
+        charts_dir = Path(f"data/eval_charts_{profile}")
 
-        for d in [logs, evals, charts]:
-            p = Path(d)
-            if p.exists():
-                for f in p.glob("*"):
-                    if f.is_file():
-                        f.unlink()
-                    else:
-                        import shutil
-                        shutil.rmtree(f)
-            p.mkdir(parents=True, exist_ok=True)
+        clear_and_prepare(logs_dir)
+        clear_and_prepare(eval_dir)
+        clear_and_prepare(charts_dir)
 
+        # Run isolated benchmark
         cmd = [
             "poetry", "run", "python", "scripts/run_full_benchmark.py",
             "--prompt_file", args.prompt_file,
             "--num_prompts", str(args.num_prompts),
-            "--logs_dir", logs,
-            "--eval_dir", evals,
-            "--charts_dir", charts,
+            "--logs_dir", str(logs_dir),
+            "--eval_dir", str(eval_dir),
+            "--charts_dir", str(charts_dir),
             "--k", str(args.k),
             "--bootstrap_iters", str(args.bootstrap_iters),
             "--seed", str(args.seed),
         ]
         run(cmd)
 
-        df = load_eval_df(Path(evals))
+        df = load_eval_df(eval_dir)
         df["model"] = profile
         all_dfs.append(df)
 

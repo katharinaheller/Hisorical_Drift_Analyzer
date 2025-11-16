@@ -1,0 +1,2 @@
+query_id,ndcg@k,faithfulness,citation_hit_rate,dominant_decade,model
+Define_explain_knowledge_representation_in_expert_systems_according_to_the_corpu,1.0,0.940730842161659,1.0,2010,phi3_4b

@@ -16,27 +16,21 @@ from src.core.prompt.query.prompt_builder import PromptBuilder
 
 
 class LLMOrchestrator:
-    """High-level orchestrator: query → retrieval → prompt assembly → LLM generation."""
+    """Coherent LLM orchestration pipeline with validated logging and deterministic retrieval."""
 
     def __init__(self, config_path: str = "configs/llm.yaml", logs_dir: str = "data/logs"):
-        # Load high-level configuration
         self.cfg = ConfigLoader(config_path).config
 
-        # Logger
         self.logger = logging.getLogger("LLMOrchestrator")
         self._setup_logging()
 
-        # Dynamic log directory passed from benchmark
         self.logs_dir = Path(logs_dir)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Prompt pipeline
         self.prompt_phase = PromptOrchestrator()
 
-        # Retriever
         self.retriever = self._init_retriever()
 
-        # Citation style for prompt builder (falls back to IEEE if missing)
         citation_style = (
             self.cfg.get("generation", {})
             .get("citations", {})
@@ -45,10 +39,9 @@ class LLMOrchestrator:
         )
         self.prompt_builder = PromptBuilder(citation_style=citation_style)
 
-        # LLM backend (model + sampling read from YAML)
         self.llm = self._init_llm()
 
-        # Embedding model for factual consistency scoring
+        # Embedding model for factual consistency revision
         self._ff_model = SentenceTransformer(
             self.cfg.get("generation", {}).get(
                 "faith_embed_model", "multi-qa-mpnet-base-dot-v1"
@@ -56,55 +49,54 @@ class LLMOrchestrator:
         )
 
         self.logger.info(
-            f"LLMOrchestrator initialized successfully "
-            f"(citations={citation_style}, logs_dir={self.logs_dir})."
+            f"LLMOrchestrator initialized (citations={citation_style}, logs_dir={self.logs_dir})."
         )
 
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     def _setup_logging(self) -> None:
-        # Configure logging from YAML
-        log_level = self.cfg.get("global", {}).get("log_level", "INFO").upper()
+        # Configure logging level from YAML
+        lvl = self.cfg.get("global", {}).get("log_level", "INFO").upper()
         logging.basicConfig(
-            level=getattr(logging, log_level, logging.INFO),
+            level=getattr(logging, lvl, logging.INFO),
             format="%(levelname)s | %(message)s",
         )
         self.logger.info("Logging configured.")
 
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     def _init_retriever(self) -> RetrievalOrchestrator:
-        # Initialize retrieval orchestrator
-        retriever = RetrievalOrchestrator()
+        # Initialize retrieval subsystem
+        r = RetrievalOrchestrator()
         self.logger.info("Retriever initialized.")
-        return retriever
+        return r
 
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     def _init_llm(self) -> OllamaLLM:
-        # Configure LLM backend from YAML profile
-        profile_name = (
+        # Initialize LLM backend
+        profile = (
             self.cfg.get("generation", {})
             .get("llm", {})
             .get("profile", "mistral_7b")
         )
-        llm = OllamaLLM(config_path="configs/llm.yaml", profile=profile_name)
-        self.logger.info(f"LLM backend ready (profile='{profile_name}').")
+        llm = OllamaLLM(config_path="configs/llm.yaml", profile=profile)
+        self.logger.info(f"LLM backend ready (profile={profile}).")
         return llm
 
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     def _split_into_sentences(self, text: str) -> list[str]:
-        # Simple sentence splitter
+        # Very simple sentence splitter
         import re
         s = re.split(r"(?<=[.!?])\s+", text.strip())
         return [t for t in s if t]
 
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     def _fact_check_and_revise(
         self,
         answer: str,
-        evidence_texts: list[str],
+        evidence_texts: List[str],
         min_sim: float = 0.22,
         drop_below: float = 0.15,
     ) -> str:
-        # Factual consistency filtering based on embedding similarity
+        # Embedding based factual consistency refinement
         if not answer or not evidence_texts:
             return answer
 
@@ -118,6 +110,7 @@ class LLMOrchestrator:
         ev_emb = self._ff_model.encode(
             evidence_texts, normalize_embeddings=True, convert_to_tensor=True
         )
+
         sims = util.cos_sim(ans_emb, ev_emb).cpu().numpy()
 
         keep, revise = [], []
@@ -132,109 +125,44 @@ class LLMOrchestrator:
             return " ".join(keep) if keep else answer
 
         instruction = (
-            "Revise the following sentences to align strictly with the provided evidence snippets. "
-            "If support is insufficient, replace with: 'insufficient evidence'. Keep numeric citations [n]."
+            "Revise the following sentences to align strictly with the evidence snippets. "
+            "If support is insufficient write 'insufficient evidence'. Preserve numeric citations."
         )
-        ev_join = "\n\n".join(f"[EVID{i+1}] {e}" for i, e in enumerate(evidence_texts[:8]))
 
-        q = (
-            instruction
-            + "\n\n"
-            + ev_join
-            + "\n\nSentences:\n"
-            + "\n".join(f"- {s}" for s in revise)
-        )
+        ev_join = "\n\n".join(f"[EVID{i+1}] {e}" for i, e in enumerate(evidence_texts[:8]))
+        task = instruction + "\n\n" + ev_join + "\n\nSentences:\n" + "\n".join(f"- {s}" for s in revise)
 
         try:
-            revised_block = self.llm.generate(q)
-            return " ".join(keep + [revised_block])
+            revised = self.llm.generate(task)
+            return " ".join(keep + [revised])
         except Exception:
             return " ".join(keep) if keep else answer
 
-    # ------------------------------------------------------------------
-    def process_query(self, query_obj: Optional[Dict[str, Any]]) -> str:
-        # Main pipeline execution
-        if not query_obj:
-            self.logger.warning("Empty query object received.")
-            return ""
+    # --------------------------------------------------------------
+    def _safe_atomic_write(self, path: Path, payload: Dict[str, Any]) -> None:
+        # Atomic write of JSON files to prevent partial logs
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
 
-        query = query_obj.get("refined_query") or query_obj.get("processed_query")
-        intent = query_obj.get("intent", "conceptual")
-
-        if not query or not query.strip():
-            self.logger.warning("Query text missing or empty; skipping request.")
-            return ""
-
-        query = query.strip()
-        self.logger.info(
-            f"Starting full LLM pipeline | intent={intent} | query='{query}'"
-        )
-
-        # Retrieval phase
-        try:
-            retrieved_docs = self.retriever.retrieve(query, intent)
-        except Exception as e:
-            self.logger.exception(f"Retrieval failed: {e}")
-            return ""
-
-        if not retrieved_docs:
-            self.logger.warning("No documents retrieved.")
-            retrieved_docs = []
-
-        # Prompt assembly
-        try:
-            final_prompt = self._compose_full_prompt(query, intent, retrieved_docs)
-        except Exception as e:
-            self.logger.exception(f"Prompt construction failed: {e}")
-            return ""
-
-        llm_input = {
-            "system_prompt": final_prompt,
-            "query_refined": query,
-            "intent": intent,
-            "context_chunks": retrieved_docs,
-        }
-        self._log_llm_input(llm_input)
-
-        # LLM inference
-        try:
-            ans = self.llm.generate(final_prompt.strip())
-            evidence_texts = [c.get("text", "") for c in retrieved_docs if c.get("text")]
-            final_answer = self._fact_check_and_revise(ans, evidence_texts)
-
-            qid = self._log_llm_run(
-                query, intent, retrieved_docs, final_answer, final_prompt
-            )
-            self.logger.info(f"LLM generation successful (query_id={qid}).")
-            return final_answer.strip()
-        except Exception as e:
-            self.logger.exception(f"LLM generation failed: {e}")
-            return ""
-
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     def _compose_full_prompt(
         self,
         refined_query: str,
         intent: str,
         retrieved_chunks: List[Dict[str, Any]],
     ) -> str:
-        # Assemble full system prompt with citations and constraints
-        system_prompt = self.prompt_builder.build_prompt(refined_query, intent)
+        # Assemble system prompt with context and citation constraints
+        sys_p = self.prompt_builder.build_prompt(refined_query, intent)
 
-        # Chronological ordering if required by intent
         if intent == "chronological":
-
-            def safe_year(meta: Dict[str, Any]) -> int:
-                y = meta.get("year")
+            def sy(meta: Dict[str, Any]) -> int:
                 try:
-                    return int(y)
+                    return int(meta.get("year", 9999))
                 except Exception:
                     return 9999
 
-            retrieved_chunks = sorted(
-                retrieved_chunks,
-                key=lambda c: safe_year(c.get("metadata", {})),
-            )
+            retrieved_chunks = sorted(retrieved_chunks, key=lambda c: sy(c.get("metadata", {})))
             self.logger.info("Chunks sorted chronologically.")
 
         unique_sources: Dict[str, int] = {}
@@ -249,14 +177,10 @@ class LLMOrchestrator:
                 unique_sources[src] = ref_id
                 ref_data[ref_id] = {"source_file": src, "year": year}
 
-        lines: List[str] = []
-        lines.append(system_prompt.strip())
+        lines = []
+        lines.append(sys_p.strip())
         lines.append("")
         lines.append(f"Refined query:\n{refined_query.strip()}\n")
-        lines.append(
-            "You are given the following context snippets from historical AI-related documents."
-        )
-        lines.append("")
         lines.append("Context snippets:")
 
         for chunk in retrieved_chunks:
@@ -264,128 +188,138 @@ class LLMOrchestrator:
             src = meta.get("source_file", "Unknown.pdf")
             year = meta.get("year", "n/a")
             ref_id = unique_sources.get(src, 0)
+
             header = f"[{ref_id}] {src} ({year})"
-            text = chunk.get("text", "").strip()
+            text = chunk.get("text", "").strip() or "[Empty chunk]"
+
             lines.append(header)
-            lines.append(text if text else "[Empty chunk]")
+            lines.append(text)
             lines.append("")
 
         lines.append(
-            "Now answer the refined query using ONLY the context above. "
-            "Use IEEE-style numeric citations [n]. If a claim lacks sufficient evidence, "
-            "write 'insufficient evidence'."
+            "Answer the refined query using only the context above. "
+            "Use numeric citations. If a claim lacks evidence write 'insufficient evidence'."
         )
         lines.append("")
         lines.append("Reference index:")
-        for ref_id, meta in ref_data.items():
-            lines.append(f"[{ref_id}] {meta['source_file']} ({meta['year']})")
+
+        for rid, meta in ref_data.items():
+            lines.append(f"[{rid}] {meta['source_file']} ({meta['year']})")
 
         lines.append("")
         lines.append("IMPORTANT OUTPUT REQUIREMENTS:")
-        lines.append("Your final answer MUST end with a separate section titled 'References'.")
-        lines.append(
-            "This final section MUST list all unique PDFs exactly once in the format:"
-        )
+        lines.append("Your final answer must end with a section titled 'References'.")
+        lines.append("List all unique PDFs exactly once in the format:")
         lines.append("[n] FILENAME.pdf (YEAR)")
-        lines.append("Do NOT omit this section. Do NOT invent filenames or years.")
-        lines.append("The 'References' section MUST appear at the very end of your output.")
+        lines.append("This section must be at the end of your output.")
 
         return "\n".join(lines)
 
-    # ------------------------------------------------------------------
-    def _log_llm_input(self, llm_input: Dict[str, Any]) -> Path:
-        # Save refined prompt and retrieved chunks
+    # --------------------------------------------------------------
+    def _log_llm_input(self, query: str, intent: str, prompt: str, chunks: List[Dict[str, Any]]) -> None:
+        # Log input with atomic write
         ts = time.strftime("%Y-%m-%dT%H-%M-%S")
-        out_path = self.logs_dir / f"llm_input_{ts}.json"
+        path = self.logs_dir / f"llm_input_{ts}.json"
 
         payload = {
             "timestamp": ts,
-            "query_refined": llm_input["query_refined"],
-            "intent": llm_input["intent"],
-            "prompt_final_to_llm": llm_input["system_prompt"],
-            "chunks_final_to_llm": llm_input["context_chunks"],
+            "query_refined": query,
+            "intent": intent,
+            "prompt_final_to_llm": prompt,
+            "chunks_final_to_llm": chunks,
         }
 
-        out_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self.logger.info(f"Logged refined LLM input → {out_path}")
-        return out_path
+        self._safe_atomic_write(path, payload)
+        self.logger.info(f"Logged refined LLM input → {path}")
 
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     def _log_llm_run(
         self,
         query: str,
         intent: str,
         retrieved: List[Dict[str, Any]],
         output: str,
-        final_prompt: str,
+        prompt: str,
     ) -> str:
-        # Save final LLM output
+        # Log completed LLM output
         ts = time.strftime("%Y-%m-%dT%H-%M-%S")
-        qid = "".join(
-            ch if ch.isalnum() or ch in "-_" else "_" for ch in query
-        )[:80] or "query"
+        qid = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in query)[:80] or "query"
 
-        out_path = self.logs_dir / f"llm_{ts}.json"
+        path = self.logs_dir / f"llm_{ts}.json"
         payload = {
             "timestamp": ts,
             "query_id": qid,
             "query": query,
             "query_refined": query,
             "intent": intent,
-            "prompt_final_to_llm": final_prompt,
+            "prompt_final_to_llm": prompt,
             "retrieved_chunks": retrieved,
             "model_output": output,
         }
 
-        out_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._safe_atomic_write(path, payload)
         return qid
 
-    # ------------------------------------------------------------------
-    def run_interactive(self) -> None:
-        # Interactive shell mode
-        self.logger.info("Starting interactive LLM phase...")
+    # --------------------------------------------------------------
+    def process_query(self, query_obj: Optional[Dict[str, Any]]) -> str:
+        # Full pipeline execution
+        if not query_obj:
+            self.logger.warning("Empty query object received.")
+            return ""
+
+        query = query_obj.get("refined_query") or query_obj.get("processed_query")
+        intent = query_obj.get("intent", "conceptual")
+
+        if not query or not query.strip():
+            self.logger.warning("Query text missing or empty.")
+            return ""
+
+        query = query.strip()
+
+        self.logger.info(f"Starting pipeline | intent={intent} | query='{query}'")
+
         try:
-            query = input("Enter your query (leave empty to use default): ").strip()
-        except EOFError:
-            query = ""
+            retrieved = self.retriever.retrieve(query, intent)
+        except Exception as e:
+            self.logger.exception(f"Retrieval failed: {e}")
+            return ""
 
-        if not query:
-            query = "How has the term 'AI' evolved over time?"
-            self.logger.info(f"No input provided. Using default query: '{query}'")
+        try:
+            prompt = self._compose_full_prompt(query, intent, retrieved)
+        except Exception as e:
+            self.logger.exception(f"Prompt construction failed: {e}")
+            return ""
 
-        query_obj = {
-            "refined_query": query,
-            "intent": "chronological" if "evolve" in query.lower() else "conceptual",
-        }
+        self._log_llm_input(query, intent, prompt, retrieved)
 
-        self.logger.info(f"Processing query in interactive mode | query='{query}'")
-        result = self.process_query(query_obj)
+        try:
+            raw_ans = self.llm.generate(prompt.strip())
+            evidence = [c.get("text", "") for c in retrieved if c.get("text")]
+            final_ans = self._fact_check_and_revise(raw_ans, evidence)
 
-        print("\n=== LLM OUTPUT ===\n")
-        print(result if result else "[No response generated]")
-        self.logger.info("Interactive LLM phase completed successfully.")
+            qid = self._log_llm_run(query, intent, retrieved, final_ans, prompt)
+            self.logger.info(f"LLM generation successful (id={qid}).")
 
-    # ------------------------------------------------------------------
+            return final_ans.strip()
+        except Exception as e:
+            self.logger.exception(f"LLM generation failed: {e}")
+            return ""
+
+    # --------------------------------------------------------------
     def close(self) -> None:
-        # Close all subcomponents safely
-        self.logger.info("Closing LLMOrchestrator and freeing resources.")
+        # Safe close of all subcomponents
+        self.logger.info("Closing LLMOrchestrator.")
         try:
             if hasattr(self.retriever, "close"):
                 self.retriever.close()
-        except Exception as e:
-            self.logger.warning(f"Failed to close retriever: {e}")
+        except Exception:
+            pass
 
         try:
             if hasattr(self.llm, "close"):
                 self.llm.close()
-        except Exception as e:
-            self.logger.warning(f"Failed to close LLM backend: {e}")
+        except Exception:
+            pass
 
         try:
             if hasattr(self.prompt_phase, "close"):
@@ -393,4 +327,4 @@ class LLMOrchestrator:
         except Exception:
             pass
 
-        self.logger.info("LLMOrchestrator closed successfully.")
+        self.logger.info("LLMOrchestrator closed.")

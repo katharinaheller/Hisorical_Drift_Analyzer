@@ -24,9 +24,9 @@ FAITH_COLORS = {
 }
 
 FAITH_LABELS = {
-    "high": "High (≥0.80)",
-    "medium": "Medium (0.50–0.79)",
-    "low": "Low (<0.50)",
+    "high": "High (≥0.70)",
+    "medium": "Medium (0.40–0.69)",
+    "low": "Low (<0.40)",
 }
 
 
@@ -66,9 +66,9 @@ class MultiModelReportBuilder:
     def _faith_band(self, v: float) -> str:
         if np.isnan(v):
             return "missing"
-        if v >= 0.80:
+        if v >= 0.70:
             return "high"
-        if v >= 0.50:
+        if v >= 0.40:
             return "medium"
         return "low"
 
@@ -99,7 +99,7 @@ class MultiModelReportBuilder:
                 color=FAITH_COLORS[b],
                 edgecolor="black",
                 alpha=0.9,
-                label=FAITH_LABELS[b]
+                label=FAITH_LABELS[b],
             )
 
         ax.set_xticks(x)
@@ -116,7 +116,9 @@ class MultiModelReportBuilder:
 
     # ---------------------------------------------------------
     def _aggregate_stats(self, df: pd.DataFrame) -> list[list[str]]:
-        rows = [["Model", "Mean NDCG", "Mean Faith", "Median NDCG", "Median Faith", "Std NDCG", "Std Faith"]]
+        rows = [["Model", "Mean NDCG", "Mean Faith", "Median NDCG",
+                 "Median Faith", "Std NDCG", "Std Faith"]]
+
         for m in sorted(df["model"].unique()):
             d = df[df["model"] == m]
             rows.append([
@@ -138,22 +140,26 @@ class MultiModelReportBuilder:
         if df.empty:
             raise ValueError("No evaluation files found for any model.")
 
-        # create plots
         plot_path = self._plot_faithfulness_band_comparison(df)
-
-        # compute stats
         stats = self._aggregate_stats(df)
 
-        # PDF
-        doc = SimpleDocTemplate(str(pdf_path), pagesize=A4,
-                                leftMargin=2 * cm, rightMargin=2 * cm,
-                                topMargin=2 * cm, bottomMargin=2 * cm)
+        doc = SimpleDocTemplate(
+            str(pdf_path),
+            pagesize=A4,
+            leftMargin=2 * cm,
+            rightMargin=2 * cm,
+            topMargin=2 * cm,
+            bottomMargin=2 * cm
+        )
+
         story = []
 
-        # Title
         story.append(Paragraph("<b>Multi-Model Benchmark Report</b>", self.styleH))
         story.append(Spacer(1, 0.3 * cm))
-        story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", self.styleN))
+        story.append(Paragraph(
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            self.styleN
+        ))
         story.append(Spacer(1, 0.4 * cm))
 
         story.append(Paragraph(
@@ -164,7 +170,6 @@ class MultiModelReportBuilder:
         ))
         story.append(PageBreak())
 
-        # Stats Table
         story.append(Paragraph("1. Summary Statistics per Model", self.styleH))
         table = Table(stats, colWidths=[3.2 * cm] * 7)
         table.setStyle(TableStyle([
@@ -175,13 +180,11 @@ class MultiModelReportBuilder:
         story.append(table)
         story.append(PageBreak())
 
-        # Plots
         story.append(Paragraph("2. Faithfulness Band Comparison", self.styleH))
         story.append(Spacer(1, 0.2 * cm))
         story.append(Image(str(plot_path), width=15 * cm, height=9 * cm))
         story.append(PageBreak())
 
-        # Done
         story.append(Paragraph("End of Report", self.styleN))
 
         doc.build(story)

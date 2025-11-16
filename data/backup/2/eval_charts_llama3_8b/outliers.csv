@@ -1,0 +1,3 @@
+query_id,ndcg@k,faithfulness,citation_hit_rate,dominant_decade,model
+Define_describe_expert_systems_and_their_key_components___describe_its_theoretic,1.0,0.7784625059024374,1.0,2010,llama3_8b
+Define_explain_knowledge_representation_in_expert_systems_according_to_the_corpu,1.0,0.8195695248453594,1.0,2010,llama3_8b

@@ -1,0 +1,13 @@
+{
+  "query_id": "Define_explain_the_turing_test_as_described_in_the_corpus___describe_its_theoret",
+  "ndcg@k": 1.0,
+  "faithfulness": 0.46329127370791456,
+  "dominant_decade": 2020,
+  "decade_counts": {
+    "2020s": 5,
+    "2000s": 4,
+    "2010s": 1
+  },
+  "citation_hit_rate": 1.0,
+  "model_name": "mistral_7b"
+}

@@ -41,7 +41,7 @@ def run_cmd(cmd: list[str]) -> None:
     start = time.time()
     p = subprocess.Popen(cmd)
     p.wait()
-    print(f"⏱️ Finished in {time.time() - start:.1f}s\n")
+    print(f"⏱Finished in {time.time() - start:.1f}s\n")
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Automated multi-stage benchmark runner.")
@@ -145,7 +145,7 @@ if __name__ == "__main__":
 # scripts/run_full_benchmark.py
 from __future__ import annotations
 
-# # Ensure project root on sys.path
+# Ensure project root on sys.path
 import sys
 import os
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -168,7 +168,7 @@ from src.core.evaluation.evaluation_table_exporter import EvaluationTableExporte
 
 
 def _count_files(dir_path: Path, pattern: str) -> int:
-    # Counts files using a glob pattern
+    # Count files using a glob pattern
     return sum(1 for _ in dir_path.glob(pattern))
 
 
@@ -181,7 +181,7 @@ def _load_json(path: Path) -> dict | None:
 
 
 def _clean_directory(path: Path) -> None:
-    # Deletes all contents of a directory, recreates it
+    # Delete all contents of a directory and recreate it
     if path.exists():
         for f in path.glob("*"):
             if f.is_file():
@@ -221,7 +221,7 @@ def main() -> None:
     eval_dir = Path(args.eval_dir)
     charts_dir = Path(args.charts_dir)
 
-    # Clean deterministic directories
+    # Clean deterministic directories for this run
     _clean_directory(logs_dir)
     _clean_directory(eval_dir)
     _clean_directory(charts_dir)
@@ -238,6 +238,7 @@ def main() -> None:
     print(f"intent       : {args.intent or 'auto'}")
     print()
 
+    # ------------------------------------------------------------------
     print("=== Phase 1: LLM Generation ===")
     prompt_file = Path(args.prompt_file)
     if not prompt_file.exists():
@@ -265,9 +266,13 @@ def main() -> None:
             else:
                 pre = prompt_orch.preprocessor.process(prompt)
                 intent = pre["intent"]
-                refined = prompt_orch.prompt_builder.reformulate_query(pre["processed_query"], intent)
+                refined = prompt_orch.prompt_builder.reformulate_query(
+                    pre["processed_query"], intent
+                )
                 query_obj = {"processed_query": refined, "intent": intent}
-                prompt_orch.logger.info(f"Auto intent='{intent}' → refined query='{refined}'")
+                prompt_orch.logger.info(
+                    f"Auto intent='{intent}' → refined query='{refined}'"
+                )
 
             _ = llm_orch.process_query(query_obj)
 
@@ -285,14 +290,16 @@ def main() -> None:
 
     after_logs = _count_files(logs_dir, "llm_*.json")
     produced = max(0, after_logs - before_logs)
-    print(f"LLM phase completed. Produced {produced} valid logs.\n")
+    print(f"LLM phase completed. Produced {produced} valid llm_*.json logs.\n")
 
     if produced == 0:
         print("No LLM outputs. Stopping.")
         return
 
+    # ------------------------------------------------------------------
     print("=== Phase 2: Evaluation ===")
 
+    # Derive model_name from logs_dir, e.g. data/logs_phi3_4b → phi3_4b
     model_name = Path(args.logs_dir).name.replace("logs_", "") or "benchmark"
 
     evaluator = EvaluationOrchestrator(
@@ -304,12 +311,17 @@ def main() -> None:
     summary_eval = evaluator.evaluate_batch_from_logs(logs_dir=str(logs_dir))
     print(json.dumps(summary_eval, indent=2))
 
-    if not summary_eval or int(summary_eval.get("files", 0)) == 0:
+    if not summary_eval or int(summary_eval.get("evaluated_files", 0)) == 0:
         print("No evaluatable data. Stopping before visualization.")
         return
 
+    # ------------------------------------------------------------------
     print("=== Phase 3: Visualization ===")
-    cfg = VizConfig(logs_dir=str(eval_dir), out_dir=str(charts_dir), bootstrap_iters=args.bootstrap_iters)
+    cfg = VizConfig(
+        logs_dir=str(eval_dir),
+        out_dir=str(charts_dir),
+        bootstrap_iters=args.bootstrap_iters
+    )
     viz = EvaluationVisualizer(cfg)
     summary_viz = viz.run_all()
     print(json.dumps(summary_viz, indent=2))
@@ -318,6 +330,7 @@ def main() -> None:
     summary = _load_json(summary_json)
     has_summary = bool(summary and "ndcg@k_mean" in summary and "faith_mean" in summary)
 
+    # ------------------------------------------------------------------
     print("=== Phase 4: Table Export ===")
     if has_summary:
         exp = EvaluationTableExporter(charts_dir=str(charts_dir))
@@ -329,19 +342,20 @@ def main() -> None:
         except Exception as e:
             print(f"Table export failed: {e}")
     else:
-        print("Skipping table export (no summary).")
+        print("Skipping table export (no summary.json with means).")
 
+    # ------------------------------------------------------------------
     print("=== Phase 5: PDF Report ===")
     if has_summary:
         try:
             from src.core.evaluation.report_builder import ReportBuilder
-            rb = ReportBuilder(charts_dir=str(charts_dir))
+            rb = ReportBuilder(charts_dir=str(charts_dir), eval_dir=str(eval_dir))
             pdf_path = rb.build(custom_name=f"benchmark_report_n{args.num_prompts}_seed{args.seed}.pdf")
             print(f"Generated PDF report: {pdf_path}")
         except Exception as e:
             print(f"PDF generation failed: {e}")
     else:
-        print("Skipping PDF generation.")
+        print("Skipping PDF generation (no summary.json with means).")
 
     elapsed = (time.time() - start_time) / 60
     print(f"\n=== BENCHMARK COMPLETE ({elapsed:.1f} min) ===")
@@ -516,12 +530,14 @@ if __name__ == "__main__":
     main()
 
 ==== C:\Users\katha\historical-drift-analyzer\scripts\run_multi_model_benchmark.py ==== 
+# scripts/run_multi_model_benchmark.py
 from __future__ import annotations
 import sys
 import os
 import subprocess
 import time
 from pathlib import Path
+import argparse
 import pandas as pd
 import json
 import numpy as np
@@ -535,19 +551,26 @@ if str(PROJECT_ROOT) not in sys.path:
 # PDF builder
 from src.core.evaluation.multi_model_report_builder import MultiModelReportBuilder
 
-# unified colors
+# six-level strict color coding
 FAITH_COLORS = {
-    "high": "#1a9850",
-    "medium": "#fee08b",
-    "low": "#d73027",
+    "excellent":  "#006d2c",  # dark green
+    "good":       "#31a354",  # green
+    "fair":       "#a1d99b",  # light green
+    "borderline": "#fed976",  # yellow
+    "poor":       "#fd8d3c",  # orange
+    "critical":   "#e31a1c",  # deep red
 }
 
 FAITH_LABELS = {
-    "high": "High (≥0.80)",
-    "medium": "Medium (0.50–0.79)",
-    "low": "Low (<0.50)",
+    "excellent":  "Excellent (≥0.95)",
+    "good":       "Good (0.85–0.94)",
+    "fair":       "Fair (0.75–0.84)",
+    "borderline": "Borderline (0.60–0.74)",
+    "poor":       "Poor (0.40–0.59)",
+    "critical":   "Critical (<0.40)",
 }
 
+# ----------------------------------------------------------------------
 
 def run(cmd: list[str]) -> None:
     # Execute subprocess
@@ -557,9 +580,10 @@ def run(cmd: list[str]) -> None:
     p.wait()
     print(f"finished in {time.time() - start:.1f}s\n")
 
+# ----------------------------------------------------------------------
 
-# robust loader
 def load_eval_df(eval_dir: Path) -> pd.DataFrame:
+    # Load *_evaluation.json files into a dataframe
     rows = []
     for fp in eval_dir.glob("*_evaluation.json"):
         try:
@@ -579,22 +603,33 @@ def load_eval_df(eval_dir: Path) -> pd.DataFrame:
         df["faith"] = np.nan
     return df
 
+# ----------------------------------------------------------------------
 
 def faith_band(f: float) -> str:
+    # Strict six-level classification
     if np.isnan(f):
         return "missing"
-    if f >= 0.80:
-        return "high"
-    if f >= 0.50:
-        return "medium"
-    return "low"
+    v = float(f)
+    if v >= 0.95:
+        return "excellent"
+    if v >= 0.85:
+        return "good"
+    if v >= 0.75:
+        return "fair"
+    if v >= 0.60:
+        return "borderline"
+    if v >= 0.40:
+        return "poor"
+    return "critical"
 
+# ----------------------------------------------------------------------
 
 def plot_global_comparison(df: pd.DataFrame, out_path: Path) -> None:
+    # Group counts by model and six-band faithfulness scale
     df["band"] = df["faith"].apply(faith_band)
 
     models = sorted(df["model"].unique())
-    bands = ["high", "medium", "low"]
+    bands = ["excellent", "good", "fair", "borderline", "poor", "critical"]
 
     counts = (
         df.groupby(["model", "band"])["query_id"]
@@ -604,12 +639,12 @@ def plot_global_comparison(df: pd.DataFrame, out_path: Path) -> None:
     )
 
     x = np.arange(len(models))
-    width = 0.22
+    width = 0.12  # narrower due to 6 categories
 
-    fig, ax = plt.subplots(figsize=(7, 4.5))
+    fig, ax = plt.subplots(figsize=(10, 5))
 
     for i, b in enumerate(bands):
-        offsets = x + (i - 1) * width
+        offsets = x + (i - (len(bands) - 1) / 2) * width
         ax.bar(
             offsets,
             counts[b].values,
@@ -617,35 +652,70 @@ def plot_global_comparison(df: pd.DataFrame, out_path: Path) -> None:
             color=FAITH_COLORS[b],
             edgecolor="black",
             alpha=0.9,
-            label=FAITH_LABELS[b]
+            label=FAITH_LABELS[b],
         )
 
     ax.set_xticks(x)
     ax.set_xticklabels(models, rotation=10)
     ax.set_ylabel("Number of queries")
     ax.set_title("Faithfulness band comparison across models")
-    ax.legend(frameon=False)
+    ax.legend(frameon=False, ncol=3)
 
     fig.tight_layout()
     fig.savefig(out_path.with_suffix(".png"), dpi=150, bbox_inches="tight")
     fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight")
     plt.close(fig)
 
+# ----------------------------------------------------------------------
 
 def main() -> None:
 
+    parser = argparse.ArgumentParser(
+        description="Run multi-model benchmark and build comparison report."
+    )
+    parser.add_argument(
+        "--num_prompts",
+        type=int,
+        default=10,
+        help="Number of prompts to use from the prompt file."
+    )
+    parser.add_argument(
+        "--prompt_file",
+        type=str,
+        default="data/prompts/benchmark_prompts.txt",
+        help="Prompt file containing one query per line."
+    )
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=10,
+        help="NDCG@k cutoff passed into the benchmark script."
+    )
+    parser.add_argument(
+        "--bootstrap_iters",
+        type=int,
+        default=2000,
+        help="Bootstrap iterations for confidence intervals."
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for deterministic runs."
+    )
+    args = parser.parse_args()
+
+    # Map profile → Ollama model identifier
     models = {
-        "phi3_4b":    "phi3-4b",
+        "phi3_4b": "phi3-4b",
         "mistral_7b": "mistral-7b-instruct",
-        "llama3_8b":  "llama3-8b-instruct",
+        "llama3_8b": "llama3-8b-instruct",
     }
 
-    num_prompts = 100
-    prompt_file = "data/prompts/benchmark_prompts.txt"
     all_dfs = []
 
     for profile, model in models.items():
-        print(f"=== RUNNING MODEL: {profile} ===")
+        print(f"=== RUNNING MODEL: {profile} ({model}) ===")
 
         logs = f"data/logs_{profile}"
         evals = f"data/eval_logs_{profile}"
@@ -664,14 +734,14 @@ def main() -> None:
 
         cmd = [
             "poetry", "run", "python", "scripts/run_full_benchmark.py",
-            "--prompt_file", prompt_file,
-            "--num_prompts", str(num_prompts),
+            "--prompt_file", args.prompt_file,
+            "--num_prompts", str(args.num_prompts),
             "--logs_dir", logs,
             "--eval_dir", evals,
             "--charts_dir", charts,
-            "--k", "10",
-            "--bootstrap_iters", "2000",
-            "--seed", "42",
+            "--k", str(args.k),
+            "--bootstrap_iters", str(args.bootstrap_iters),
+            "--seed", str(args.seed),
         ]
         run(cmd)
 
@@ -692,12 +762,11 @@ def main() -> None:
     pdf_path = rb.build(name="multi_model_benchmark_report.pdf")
 
     print("\nAll done.")
-    print("→ CSV:", outdir / "all_models_evaluation.csv")
+    print("→ CSV :", outdir / "all_models_evaluation.csv")
     print("→ Plots:", outdir / "faithfulness_model_comparison.*")
     print("→ PDF :", pdf_path)
 
 
 if __name__ == "__main__":
     main()
-
 

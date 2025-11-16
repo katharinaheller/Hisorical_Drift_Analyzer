@@ -26,8 +26,6 @@ FAITH_LOW_COLOR = "#d73027"    # red for low faithfulness
 
 @dataclass
 class VizConfig:
-    # Base directories are already model-isolated via caller, e.g.:
-    # logs_dir="data/eval_logs_mistral_7b", out_dir="data/eval_charts_mistral_7b"
     logs_dir: str = "data/eval_logs"
     out_dir: str = "data/eval_charts"
     pattern: str = "*_evaluation.json"
@@ -36,21 +34,15 @@ class VizConfig:
     iqr_k: float = 1.5
     z_thresh: float = 3.0
 
-    # Faithfulness band thresholds on [0, 1]
-    faith_high_thr: float = 0.80   # good factual grounding
-    faith_mid_thr: float = 0.50    # partially grounded
+    # MODERATE BANDS (angepasst)
+    faith_high_thr: float = 0.70     # vorher 0.80
+    faith_mid_thr: float = 0.40      # vorher 0.50
     # below mid_thr is considered poor
 
 
 class EvaluationVisualizer:
     """
     Publication-oriented evaluation visualizer.
-
-    Design:
-    - NDCG@k is treated as intrinsic retrieval quality and shown via histograms and control charts.
-    - Faithfulness is treated as an extrinsic factual-consistency signal and discretized into
-      qualitative bands (good, medium, poor) instead of plain histograms.
-    - All plots operate on locally stored *_evaluation.json files produced by EvaluationOrchestrator.
     """
 
     def __init__(self, cfg: VizConfig | None = None):
@@ -64,7 +56,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def _load_eval_rows(self) -> pd.DataFrame:
-        # Load all *_evaluation.json files into a flat DataFrame
         rows: List[Dict[str, Any]] = []
         for fp in sorted(self.logs_dir.glob(self.cfg.pattern)):
             try:
@@ -73,10 +64,8 @@ class EvaluationVisualizer:
                     "query_id": data.get("query_id", fp.stem),
                     "ndcg@k": float(data.get("ndcg@k", np.nan)),
                     "faithfulness": float(data.get("faithfulness", np.nan)),
-                    # Optional extras if present
                     "citation_hit_rate": float(data.get("citation_hit_rate", np.nan)),
                     "dominant_decade": data.get("dominant_decade", None),
-                    # Optional model tag if your logging includes it later
                     "model": data.get("model")
                              or data.get("llm_profile")
                              or data.get("model_name"),
@@ -93,7 +82,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def _bootstrap_ci(self, arr: np.ndarray, iters: int) -> Tuple[float, float, float]:
-        # Simple bootstrap mean and 95 percent confidence interval
         arr = arr[~np.isnan(arr)]
         if len(arr) == 0:
             return float("nan"), float("nan"), float("nan")
@@ -107,7 +95,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def _outliers_iqr(self, arr: np.ndarray) -> np.ndarray:
-        # IQR-based outlier detection
         arr = np.asarray(arr, float)
         clean = arr[~np.isnan(arr)]
         if len(clean) == 0:
@@ -121,7 +108,6 @@ class EvaluationVisualizer:
         return (arr < lo) | (arr > hi)
 
     def _outliers_z(self, arr: np.ndarray) -> np.ndarray:
-        # z-score based outlier detection
         arr = np.asarray(arr, float)
         mu, sd = np.nanmean(arr), np.nanstd(arr)
         if sd == 0 or np.isnan(sd):
@@ -131,23 +117,19 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def _save_df(self, name: str, df: pd.DataFrame) -> None:
-        # Persist an intermediate DataFrame as CSV
         df.to_csv(self.out_dir / f"{name}.csv", index=False, encoding="utf-8")
 
     def _save_fig(self, fig: plt.Figure, stem: str) -> None:
-        # Save figures in PNG and SVG
         fig.savefig(self.out_dir / f"{stem}.png", dpi=150, bbox_inches="tight")
         fig.savefig(self.out_dir / f"{stem}.svg", bbox_inches="tight")
 
     def _titled(self, base: str) -> str:
-        # Uniform figure caption prefix
         title = f"Figure {self._fig_no}: {base}"
         self._fig_no += 1
         return title
 
     # ------------------------------------------------------------------
     def _faithfulness_band(self, val: float) -> str:
-        # Map continuous faithfulness score to qualitative band
         if np.isnan(val):
             return "missing"
         if val >= self.cfg.faith_high_thr:
@@ -158,7 +140,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def plot_ndcg_histogram(self, df: pd.DataFrame) -> None:
-        # Histogram for intrinsic retrieval quality NDCG@k
         vals = df["ndcg@k"].astype(float).dropna().values
         if len(vals) == 0:
             return
@@ -192,7 +173,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def plot_faithfulness_bands_global(self, df: pd.DataFrame) -> None:
-        # Bar chart of faithfulness quality bands across all queries
         vals = df["faithfulness"].astype(float).dropna().values
         if len(vals) == 0:
             return
@@ -206,7 +186,11 @@ class EvaluationVisualizer:
             FAITH_MED_COLOR,
             FAITH_LOW_COLOR,
         ]
-        labels = ["High (≥ 0.80)", "Medium (0.50–0.79)", "Low (< 0.50)"]
+        labels = [
+            "High (≥ 0.70)",
+            "Medium (0.40–0.69)",
+            "Low (< 0.40)"
+        ]
 
         fig = plt.figure(figsize=(6, 4))
         x = np.arange(len(counts))
@@ -223,7 +207,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def plot_faithfulness_bands_by_model(self, df: pd.DataFrame) -> None:
-        # Grouped bar chart of faithfulness bands per LLM profile if model metadata is available
         if "model" not in df.columns:
             return
         df_model = df.dropna(subset=["model"])
@@ -232,13 +215,17 @@ class EvaluationVisualizer:
 
         models = sorted(df_model["model"].unique())
         if len(models) <= 1:
-            return  # nothing to compare
+            return
 
         df_model = df_model.copy()
         df_model["faith_band"] = df_model["faithfulness"].astype(float).apply(self._faithfulness_band)
 
         band_order = ["high", "medium", "low"]
-        band_labels = ["High (≥ 0.80)", "Medium (0.50–0.79)", "Low (< 0.50)"]
+        band_labels = [
+            "High (≥ 0.70)",
+            "Medium (0.40–0.69)",
+            "Low (< 0.40)"
+        ]
         band_color_map = {
             "high": FAITH_GOOD_COLOR,
             "medium": FAITH_MED_COLOR,
@@ -279,7 +266,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def plot_scatter_correlation(self, df: pd.DataFrame) -> Tuple[float, float]:
-        # Scatter plot NDCG vs Faithfulness with correlation coefficients
         x = df["ndcg@k"].astype(float).values
         y = df["faithfulness"].astype(float).values
         mask = (~np.isnan(x)) & (~np.isnan(y))
@@ -302,7 +288,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def plot_run_order_control(self, df: pd.DataFrame) -> None:
-        # Simple run-order charts for both metrics to detect drift or temporal patterns
         df = df.reset_index(drop=True)
         df["idx"] = np.arange(len(df))
 
@@ -330,7 +315,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def detect_outliers(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Outliers in either NDCG or Faithfulness based on IQR or z-score
         nd = df["ndcg@k"].astype(float).values
         fa = df["faithfulness"].astype(float).values
 
@@ -344,7 +328,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def summarize(self, df: pd.DataFrame) -> Dict[str, Any]:
-        # Aggregate statistics and write summary.json
         nd = df["ndcg@k"].astype(float).values
         fa = df["faithfulness"].astype(float).values
 
@@ -375,7 +358,6 @@ class EvaluationVisualizer:
 
     # ------------------------------------------------------------------
     def run_all(self) -> Dict[str, Any]:
-        # Main entry point for statistical visualization
         df = self._load_eval_rows()
         self._save_df("raw_eval", df)
 
@@ -384,21 +366,14 @@ class EvaluationVisualizer:
             (self.out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             return summary
 
-        # NDCG intrinsic quality
         self.plot_ndcg_histogram(df)
-
-        # Faithfulness as qualitative bands
         self.plot_faithfulness_bands_global(df)
         self.plot_faithfulness_bands_by_model(df)
-
-        # Interaction between metrics and temporal stability
         self.plot_scatter_correlation(df)
         self.plot_run_order_control(df)
 
-        # Outlier export for inspection
         outliers = self.detect_outliers(df)
         self._save_df("outliers", outliers)
 
-        # Summary statistics for LaTeX table and report builder
         summary = self.summarize(df)
         return summary
